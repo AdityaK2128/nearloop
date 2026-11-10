@@ -382,7 +382,7 @@ final class ChatStore: ObservableObject {
 
     /// `finishing`: Search is on but this round offers no tools (the last round, or searching kept failing).
     private func systemPrompt(tools: Bool, finishing: Bool = false, searchFailed: Bool = false) -> String {
-        let now = Date().formatted(.dateTime.weekday(.wide).day().month(.wide).year().hour().minute())
+        let now = Self.today
         var prompt = "You are a helpful assistant running privately on the user’s Mac in Nearloop. It is \(now) (\(TimeZone.current.identifier)). Format answers in Markdown."
         if tools {
             prompt += """
@@ -559,7 +559,7 @@ final class ChatStore: ObservableObject {
     /// writing tool calls (Clover wrote one even with tool_choice "none"); with no tool markup left in what
     /// it reads, it answers.
     private func answerMessages(_ conversation: Conversation, thinks: Bool, searchFailed: Bool) -> [[String: Any]] {
-        var system = "You are a helpful assistant running privately on the user’s Mac in Nearloop. It is \(Date().formatted(.dateTime.weekday(.wide).day().month(.wide).year().hour().minute())) (\(TimeZone.current.identifier)). Format answers in Markdown."
+        var system = "You are a helpful assistant running privately on the user’s Mac in Nearloop. It is \(Self.today) (\(TimeZone.current.identifier)). Format answers in Markdown."
         if thinks, let guidance = thinking.guidance { system += "\n\n" + guidance }
         var messages: [[String: Any]] = [["role": "system", "content": system]]
         let lastUser = conversation.messages.lastIndex { $0.role == .user } ?? conversation.messages.count
@@ -619,6 +619,11 @@ final class ChatStore: ObservableObject {
             .replacingOccurrences(of: #"(?s)<function=[^>]*>.*?(</function>|$)"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// The date for the system prompt, without the time: Kapitsa reuses a conversation's cached prompt only
+    /// while its beginning is unchanged, and a clock to the minute at the top rewrote it every minute, so each
+    /// message made the model read the whole conversation again. The date changes once a day.
+    static var today: String { Date().formatted(.dateTime.weekday(.wide).day().month(.wide).year()) }
 
     // MARK: Fitting the context
 
