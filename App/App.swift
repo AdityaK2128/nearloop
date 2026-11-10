@@ -60,11 +60,16 @@ struct MainWindow: View {
         .alert("Nearloop", isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })) {
             Button("OK") { store.errorMessage = nil }
         } message: { Text(store.errorMessage ?? "") }
-        .alert(item: $store.launchWarning) { warning in
-            Alert(title: Text("Not enough context for \(Agents.displayName(warning.agent))"), message: Text(warning.message),
-                  primaryButton: .default(Text("Launch Anyway")) { store.launch(warning.agent, project: warning.project, force: true) },
-                  secondaryButton: .cancel())
-        }
+        .alert(store.launchWarning.map { "Not enough context for \(Agents.displayName($0.agent))" } ?? "",
+               isPresented: Binding(get: { store.launchWarning != nil }, set: { if !$0 { store.launchWarning = nil } }),
+               presenting: store.launchWarning) { warning in
+            if let context = warning.reload {
+                Button("Reload at \(warning.reloadLabel ?? context) and Launch") { store.reloadAndLaunch(warning.agent, project: warning.project, context: context) }
+                    .keyboardShortcut(.defaultAction)
+            }
+            Button("Launch Anyway") { store.launch(warning.agent, project: warning.project, force: true) }
+            Button("Cancel", role: .cancel) {}
+        } message: { warning in Text(warning.message) }
         .sheet(isPresented: $store.showLog) { LogSheet() }
         .sheet(isPresented: $updater.showSheet) { UpdateSheet() }
     }

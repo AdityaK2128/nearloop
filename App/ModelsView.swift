@@ -157,6 +157,21 @@ private struct ModelDetail: View {
                 .help("Tokens per conversation. Larger contexts use more memory.")
                 Spacer(minLength: 0)
             }
+            // A small context suits a short chat, not an agent: Claude Code alone sends about 20K tokens before
+            // anything is typed. Suggest the size agents need when the model has it and it fits in memory.
+            if let selected = model.contextTokens(store.context), selected < 65_536 {
+                let suggestion = model.contexts.contains("128k") ? "128k" : model.contexts.contains("64k") ? "64k" : nil
+                let fits = suggestion.flatMap { model.contextTokens($0) }.flatMap { tokens in
+                    SystemMemory.estimatedNeedGB(model, tokens: tokens).map { SystemMemory.fit(needGB: $0) != .tight } } ?? true
+                if let suggestion, fits {
+                    HStack(spacing: 8) {
+                        Label("Coding agents need 64K or more, and Claude Code works best at 128K; on \(model.contextLabel(store.context)) their replies get cut off within a few steps.",
+                              systemImage: "lightbulb").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Button("Use \(model.contextLabel(suggestion).replacingOccurrences(of: " (Max)", with: ""))") { store.context = suggestion }
+                            .controlSize(.small).disabled(server.running)
+                    }
+                }
+            }
             Label(String(format: "Estimated memory%@: %.1f GB of %.0f GB",
                          tokens != nil && SystemMemory.kvBytesPerToken(model) != nil ? " at " + model.contextLabel(store.context).replacingOccurrences(of: " (Max)", with: "") : "",
                          need, SystemMemory.totalGB) + {

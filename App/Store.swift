@@ -76,6 +76,9 @@ final class AppStore: ObservableObject {
         let agent: String
         let project: URL
         let message: String
+        /// A context to reload the model at before launching, when the loaded one is smaller than the agent needs.
+        var reload: String?
+        var reloadLabel: String?
     }
 
     struct ContextFit {
@@ -384,8 +387,8 @@ final class AppStore: ObservableObject {
                     return
                 }
                 try await ensureServer(for: agent)
-                if !force, let fit = contextFit(agent), fit.level == .overflow {
-                    launchWarning = LaunchWarning(agent: agent, project: project, message: fit.message)
+                if !force, let warning = contextWarning(agent, project: project) {
+                    launchWarning = warning
                     return
                 }
                 server.measurePrompt(of: agent)
@@ -418,6 +421,50 @@ final class AppStore: ObservableObject {
         }
         guard server.phase == .ready else {
             throw Kapitsa.Failure(errorDescription: "The model failed to start, so \(purpose) couldn’t use it. See Logs for details.")
+        }
+    }
+
+    /// Before an agent starts on a model this app loaded: a warning when the loaded context is smaller than the
+    /// agent should have (a heavy agent on a small context fills it within a few steps and its replies get
+    /// cut off), offering to reload at the right size; or when its first prompt cannot fit at all.
+    private func contextWarning(_ agent: String, project: URL) -> LaunchWarning? {
+        let fit = contextFit(agent)
+        guard server.owned, server.phase == .ready, let record = server.record, let model = model(at: record.modelPath) else {
+            return fit?.level == .overflow ? LaunchWarning(agent: agent, project: project, message: fit!.message) : nil
+        }
+        let wanted = agentContext(agent, model)
+        let loaded = server.stats.effectiveContext ?? model.contextTokens(record.context) ?? 0
+        guard let wantedTokens = model.contextTokens(wanted), loaded < wantedTokens, wanted != record.context else {
+            return fit?.level == .overflow ? LaunchWarning(agent: agent, project: project, message: fit!.message) : nil
+        }
+        let name = Agents.displayName(agent), label = model.contextLabel(wanted).replacingOccurrences(of: " (Max)", with: "")
+        let (need, measured) = Agents.promptTokens(agent)
+        var message = "\(model.name) is loaded with a \(shortTokens(loaded))-token context. \(name) sends \(measured ? "" : "about ")\(shortTokens(need)) tokens before you type, and every file it reads and command it runs adds more, so on this context it runs out of room within a few steps and its replies get cut off. \(name) works best with \(label)."
+        if let fits = SystemMemory.tokensThatFit(model), fits < wantedTokens {
+            message += " About \(shortTokens(fits)) tokens fit in the memory free now; Kapitsa will use as much as fits."
+        }
+        message += " Reloading takes a moment, and anything else using the model disconnects."
+        return LaunchWarning(agent: agent, project: project, message: message, reload: wanted, reloadLabel: label)
+    }
+
+    /// Stops the loaded model, loads it again with a larger context, then launches the agent.
+    func reloadAndLaunch(_ agent: String, project: URL, context: String) {
+        guard let record = server.record, let model = model(at: record.modelPath) else { launch(agent, project: project, force: true); return }
+        Task {
+            launching = "Reloading \(model.name) at \(model.contextLabel(context).replacingOccurrences(of: " (Max)", with: ""))…"
+            defer { launching = nil }
+            server.stop()
+            for _ in 0..<100 where server.owned { try? await Task.sleep(nanoseconds: 200_000_000) }
+            if server.owned { errorMessage = "The model didn’t stop, so it wasn’t reloaded."; return }
+            do {
+                try server.start(model, context: context)
+                while server.phase == .starting { try await Task.sleep(nanoseconds: 500_000_000) }
+                guard server.phase == .ready else {
+                    errorMessage = "\(model.name) failed to load at the larger context. See Logs for details."
+                    return
+                }
+                launch(agent, project: project, force: true)
+            } catch { errorMessage = error.localizedDescription }
         }
     }
 

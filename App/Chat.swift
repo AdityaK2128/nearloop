@@ -96,6 +96,10 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     var thinkingSeconds: Double?
     var outputTokens: Int?
     var tokensPerSecond: Double?
+    /// The reply stopped at the end of the model's context (finish_reason "length"). Optional, so older chats load.
+    var cutOff: Bool?
+    /// Set when earlier parts of the chat were shortened so the request fit the model's context.
+    var contextNote: String?
 }
 
 struct Conversation: Codable, Identifiable, Hashable {
@@ -402,7 +406,7 @@ final class ChatStore: ObservableObject {
     }
 
     private func requestMessages(_ conversation: Conversation, tools: Bool, thinks: Bool, finishing: Bool = false, searchFailed: Bool = false) -> [[String: Any]] {
-        if finishing { return answerMessages(conversation, thinks: thinks, searchFailed: searchFailed) }
+        if finishing { return answerMessages(conversation, thinks: thinks, searchFailed: searchFailed) }  // fitted by the caller
         // A reply stopped between two tool calls has calls without results; the API needs each call answered,
         // so only the answered ones are sent.
         let answered = Set(conversation.messages.compactMap { $0.role == .tool ? $0.toolCallID : nil })
@@ -442,6 +446,13 @@ final class ChatStore: ObservableObject {
     private func stream(_ id: UUID, into messageID: UUID, tools: Bool, finishing: Bool = false, searchFailed: Bool = false) async throws -> [ChatToolCall] {
         guard let conversation = conversations.first(where: { $0.id == id }) else { return [] }
         let thinks = thinking.thinks(about: conversation.messages.last { $0.role == .user })
+        // The whole request must fit the model's context with room left for the reply.
+        let (fitted, shortened) = Self.fit(requestMessages(conversation, tools: tools, thinks: thinks, finishing: finishing, searchFailed: searchFailed),
+                                           context: Self.contextTokens, tools: tools)
+        if shortened {
+            let size = Self.contextTokens.map { shortTokens($0) } ?? "its"
+            update(id, messageID) { $0.contextNote = "Earlier parts of this chat were shortened to fit the model’s \(size)-token context." }
+        }
         let server = ServerController.shared
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!, timeoutInterval: 900)
         request.httpMethod = "POST"
@@ -450,7 +461,7 @@ final class ChatStore: ObservableObject {
         if !server.apiKey.isEmpty { request.setValue("Bearer \(server.apiKey)", forHTTPHeaderField: "Authorization") }
         var body: [String: Any] = [
             "model": server.record?.apiId ?? "local",
-            "messages": requestMessages(conversation, tools: tools, thinks: thinks, finishing: finishing, searchFailed: searchFailed),
+            "messages": fitted,
             "stream": true,
             "stream_options": ["include_usage": true],
             "chat_template_kwargs": ["enable_thinking": thinks],
@@ -472,6 +483,7 @@ final class ChatStore: ObservableObject {
 
         let started = Date()
         var firstText: Date?, firstToken: Date?
+        var finishReason: String?
         var text = "", reasoning = "", outputTokens: Int?
         var calls: [Int: ChatToolCall] = [:]
         var lastPush = Date.distantPast, lastSave = Date()
@@ -493,7 +505,9 @@ final class ChatStore: ObservableObject {
             if let error = object["error"] as? [String: Any] {
                 throw Kapitsa.Failure(errorDescription: error["message"] as? String ?? "The model stopped with an error.")
             }
-            guard let choice = (object["choices"] as? [[String: Any]])?.first, let delta = choice["delta"] as? [String: Any] else { continue }
+            guard let choice = (object["choices"] as? [[String: Any]])?.first else { continue }
+            if let reason = choice["finish_reason"] as? String, !reason.isEmpty { finishReason = reason }
+            guard let delta = choice["delta"] as? [String: Any] else { continue }
             if let piece = delta["reasoning_content"] as? String, !piece.isEmpty {
                 if firstToken == nil { firstToken = Date() }
                 reasoning += piece
@@ -524,6 +538,7 @@ final class ChatStore: ObservableObject {
         let ended = Date()
         update(id, messageID) { message in
             message.toolCalls = ordered
+            if finishReason == "length" { message.cutOff = true }
             if ordered.isEmpty && message.text.isEmpty && message.error == nil {
                 message.error = searchFailed ? "Web search isn’t working right now and the model didn’t write an answer. Try again, or turn Search off."
                                              : "The model didn’t write an answer. Try again."
@@ -557,7 +572,8 @@ final class ChatStore: ObservableObject {
             }
         }
         // This turn's findings, from the tools' payloads.
-        var lines: [String] = [], images: [String] = [], pageBudget = 24_000
+        // Page text in proportion to the context: about a third of it, at most 24,000 characters.
+        var lines: [String] = [], images: [String] = [], pageBudget = min(24_000, (Self.contextTokens ?? 72_000) * 6 / 5)
         for message in conversation.messages[lastUser...] where message.role == .tool {
             guard let payload = try? JSONSerialization.jsonObject(with: Data(message.text.utf8)) as? [String: Any], payload["ok"] as? Bool == true else { continue }
             for result in (payload["results"] as? [[String: Any]]) ?? [] {
@@ -602,6 +618,81 @@ final class ChatStore: ObservableObject {
         return text.replacingOccurrences(of: #"(?s)<tool_call>.*?(</tool_call>|$)"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: #"(?s)<function=[^>]*>.*?(</function>|$)"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: Fitting the context
+
+    /// The context one conversation can use on the running server: Kapitsa's own figure for a server this app
+    /// loaded (what fits in memory, at most the context it was loaded with); nil for a server it didn't load.
+    static var contextTokens: Int? {
+        let server = ServerController.shared
+        guard server.owned else { return nil }
+        if let effective = server.stats.effectiveContext { return effective }
+        guard let record = server.record else { return nil }
+        return AppStore.shared.model(at: record.modelPath)?.contextTokens(record.context)
+    }
+
+    /// A rough token count: about 3.3 characters a token for English and code, an attached image about 1,300.
+    nonisolated static func estimate(_ message: [String: Any]) -> Int {
+        var characters = 0, images = 0
+        if let text = message["content"] as? String { characters += text.count }
+        for part in (message["content"] as? [[String: Any]]) ?? [] {
+            if let text = part["text"] as? String { characters += text.count } else { images += 1 }
+        }
+        for call in (message["tool_calls"] as? [[String: Any]]) ?? [] {
+            characters += ((call["function"] as? [String: Any])?["arguments"] as? String)?.count ?? 0
+        }
+        return characters * 10 / 33 + images * 1_300 + 8
+    }
+
+    /// Fits a request into `context` tokens, keeping room for the reply: first the search results and page
+    /// text of earlier turns are shortened, then this turn's page text, then the oldest turns are left out.
+    /// The system prompt and the latest question always stay. Returns the messages and whether any were cut.
+    nonisolated static func fit(_ messages: [[String: Any]], context: Int?, tools: Bool) -> ([[String: Any]], Bool) {
+        guard let context, messages.count > 1 else { return (messages, false) }
+        let reserve = min(8_192, max(2_048, context / 4)), toolDefinitions = tools ? 700 : 0
+        let budget = context - reserve - toolDefinitions
+        var messages = messages
+        var total: Int { messages.reduce(0) { $0 + estimate($1) } }
+        guard total > budget else { return (messages, false) }
+        let lastUser = messages.lastIndex { $0["role"] as? String == "user" } ?? messages.count - 1
+        func shorten(_ index: Int, to characters: Int, label: String) {
+            guard let text = messages[index]["content"] as? String, text.count > characters + 80 else { return }
+            messages[index]["content"] = "[\(label), shortened to fit the context] " + text.prefix(characters) + " …"
+        }
+        // 1. Earlier turns' tool results (search results, page text): keep a short excerpt.
+        for index in messages.indices where index < lastUser && messages[index]["role"] as? String == "tool" {
+            shorten(index, to: 400, label: "Earlier tool result")
+            if total <= budget { return (messages, true) }
+        }
+        // 2. This turn's tool results, the longest first, down to a few thousand characters each.
+        let current = messages.indices.filter { $0 > lastUser && messages[$0]["role"] as? String == "tool" }
+            .sorted { ((messages[$0]["content"] as? String)?.count ?? 0) > ((messages[$1]["content"] as? String)?.count ?? 0) }
+        for limit in [6_000, 3_000, 1_200] {
+            for index in current { shorten(index, to: limit, label: "Tool result"); if total <= budget { return (messages, true) } }
+        }
+        // 3. The oldest turns, a whole turn at a time so a tool call never loses its result.
+        while total > budget {
+            guard let start = messages.indices.first(where: { $0 > 0 && $0 < lastUserIndex(messages) }) else { break }
+            let end = messages.indices.first { $0 > start && messages[$0]["role"] as? String == "user" } ?? messages.count
+            guard end <= lastUserIndex(messages) else { break }
+            messages.removeSubrange(start..<end)
+        }
+        return (messages, true)
+    }
+
+    nonisolated private static func lastUserIndex(_ messages: [[String: Any]]) -> Int {
+        messages.lastIndex { $0["role"] as? String == "user" } ?? messages.count - 1
+    }
+
+    /// Picks up a reply that stopped at the end of the context.
+    func continueReply(in id: UUID?) {
+        guard !busy, let id = id ?? selectedID else { return }
+        if let index = index(of: id) {
+            conversations[index].messages.append(ChatMessage(role: .user, text: "Continue from where you stopped."))
+            conversations[index].updated = Date()
+        }
+        reply(in: id, quick: id == quickID)
     }
 
     // MARK: Sources

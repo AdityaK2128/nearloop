@@ -318,6 +318,21 @@ struct AssistantReply: View {
             } else if live && message.reasoning.isEmpty && message.steps.isEmpty {
                 ProgressView().controlSize(.small)
             }
+            if let note = message.contextNote, !live {
+                Label(note, systemImage: "scissors").font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if message.cutOff == true, !live {
+                HStack(spacing: 10) {
+                    Label("Cut off: the reply reached the end of the model’s \(ChatStore.contextTokens.map { shortTokens($0) + "-token " } ?? "")context.", systemImage: "text.badge.xmark")
+                        .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    if isLast { Button("Continue") { chat.continueReply(in: conversationID) }.disabled(chat.busy) }
+                }
+                if isLast {
+                    Text("For longer replies, load the model with a larger context in Library.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if let error = message.error {
                 Label(error, systemImage: error == "Stopped." ? "stop.circle" : "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(error == "Stopped." ? Color.secondary : Color.orange)
