@@ -67,6 +67,15 @@ Sources: [Kapitsa README, Models section](https://github.com/nace-ai/kapitsa/blo
 
 Other apps can use the running model too. The base URL is `http://127.0.0.1:8000/v1`, which is OpenAI-compatible (chat completions and responses) and Anthropic-compatible (messages); any API key works unless you set one in Settings. **Coding Agents ▸ Install Command** adds a `kapitsa` command to `~/.local/bin`, so `kapitsa claude`, `kapitsa opencode`, `kapitsa codex` or `kapitsa pi` start an agent on the running model from any terminal.
 
+### iPhone Offload (Experimental)
+
+An iPhone can read part of a long prompt. While a prompt is prefilled, the Mac runs the model's first layers and the phone runs the last ones, over the USB cable; the two overlap chunk by chunk. Replies are still written by the Mac, which keeps the whole model.
+
+- **Needs:** [oMLX](https://github.com/jundot/omlx) installed (Nearloop runs it with the phone hook added in memory; oMLX itself is not changed), Xcode for its `devicectl` tool, and the Tail Worker app from the getFaster project on the phone. A USB‑C cable; Wi‑Fi works but is slow.
+- **Models:** any MLX model in your Library whose layers the worker can run: Qwen3.5/3.6/3.8 (dense and MoE), Qwen3, Qwen2, Llama and Mistral families. The page checks each model.
+- **Start with iPhone** measures the phone's memory once, works out how many of the model's layers fit, copies them to the phone (one file, replaced when you switch models) and serves on the usual port, so Chat and the agents use it. Prompts over 2K tokens (adjustable) are split.
+- **Benchmark** reads the same 4K–16K-token prompt with the Mac alone and with the phone, and tells you whether the phone is worth using for that model.
+
 ### Settings
 
 | Tab | Options |
@@ -107,6 +116,7 @@ Nearloop is licensed under the [Apache License 2.0](LICENSE). The bundled Kapits
 
 - **Inference engine:** [Kapitsa](https://github.com/nace-ai/kapitsa) by Nace AI, Apache License 2.0. Its license and third-party notices ship in the app at `Contents/Resources/kapitsa-licenses`. Nearloop is an independent front end and is not affiliated with or endorsed by the Kapitsa project.
 - **Benchmark data** in this README is published by the Kapitsa project (sources above).
+- **iPhone Offload** comes from the getFaster project: its Tail Worker app, shard format and prefill hook for [oMLX](https://github.com/jundot/omlx) (Apache License 2.0).
 - **Chat web search** follows the design of [oMLX](https://github.com/jundot/omlx)'s built-in web search (Apache License 2.0), written again in Swift.
 - **Coding agents** are products of their makers: Claude Code (Anthropic), OpenCode (SST), Codex CLI (OpenAI) and Pi (Mario Zechner).
 - **Models** keep their own licenses; check each model's card before use.

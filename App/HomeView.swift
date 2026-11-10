@@ -53,7 +53,7 @@ private struct ServerCard: View {
         case .ready: return server.record?.modelName ?? "Running"
         case .starting: return "Loading \(server.record?.modelName ?? "model")…"
         case .stopping: return "Stopping…"
-        case .external: return "External Server Detected"
+        case .external: return Offload.shared.owns(port: server.externalPort) ? "\(Offload.shared.saved.modelName) with iPhone" : "External Server Detected"
         case .failed: return "Failed to Start"
         case .stopped: return "No Model Loaded"
         }
@@ -107,7 +107,7 @@ private struct ServerCard: View {
         } else if case .failed(let reason) = server.phase {
             Text(reason)
         } else if server.phase == .external {
-            Text("Port \(String(server.externalPort))  ·  Managed outside this app")
+            Text("Port \(String(server.externalPort))  ·  " + (Offload.shared.owns(port: server.externalPort) ? "iPhone Offload (Experimental)" : "Managed outside this app"))
         } else if let model = suggestion {
             Text(model.name + speedNote(model))
         } else {

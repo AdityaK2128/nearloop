@@ -301,6 +301,9 @@ final class ServerController: ObservableObject {
         if let problem = Kapitsa.storageProblem() { throw Kapitsa.Failure(errorDescription: problem) }
         let port = Prefs.port
         if Self.listener(port) != 0 {
+            if Offload.shared.owns(port: port) {
+                throw Kapitsa.Failure(errorDescription: "iPhone Offload (Experimental) is serving \(Offload.shared.saved.modelName) on port \(port). Stop it there first.")
+            }
             throw Kapitsa.Failure(errorDescription: "Port \(port) is in use by another application. Free the port or change it in Settings.")
         }
         let apiId = model.name.replacingOccurrences(of: #"[^A-Za-z0-9_.-]+"#, with: "-", options: .regularExpression) + "-" + model.id.prefix(6)

@@ -31,6 +31,9 @@ done
 "$kapitsa_bin" --version > "$app/Contents/Resources/kapitsa-licenses/VERSION" 2>/dev/null || true
 # Icon source: icon/make-icon.swift renders the PNGs that iconutil packs into AppIcon.icns.
 cp "$project_dir/icon/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+# Experimental › iPhone Offload: the Python side, run with the user's installed oMLX.
+mkdir -p "$app/Contents/Resources/offload"
+cp "$project_dir"/App/Offload/*.py "$app/Contents/Resources/offload/"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

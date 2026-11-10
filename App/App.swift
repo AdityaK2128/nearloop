@@ -32,6 +32,7 @@ struct MainWindow: View {
                     case .agents: AgentsView()
                     case .usage: UsageView()
                     case .benchmarks: BenchmarksView()
+                    case .experimental: ExperimentalView()
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 if !store.notice.isEmpty {
@@ -100,7 +101,7 @@ struct MainWindow: View {
             HStack(spacing: 8) {
                 StatusDot(server: server)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(server.record?.modelName ?? (server.phase == .external ? "External Server" : "No Model Loaded"))
+                    Text(server.record?.modelName ?? (server.phase == .external ? Offload.shared.externalName : "No Model Loaded"))
                         .font(.caption.weight(.medium)).lineLimit(1)
                     Text(server.phase == .ready ? "Port \(server.port)" : server.phase == .starting ? "Loading…" : "Idle")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -122,7 +123,7 @@ struct MenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Text(server.record.map { "\($0.modelName) — \(server.phase == .ready ? "Running" : "Loading")" } ?? (server.phase == .external ? "External Server Running" : "No Model Loaded"))
+        Text(server.record.map { "\($0.modelName) — \(server.phase == .ready ? "Running" : "Loading")" } ?? (server.phase == .external ? Offload.shared.externalName + " Running" : "No Model Loaded"))
         Divider()
         if server.owned {
             Button("Stop Model") { server.stop() }

@@ -3,7 +3,7 @@ import SwiftUI
 
 enum Page: String, CaseIterable, Identifiable {
     // Sidebar order: what's happening now and what happened, then the models, then the agents that use them.
-    case home, chat, usage, models, discover, benchmarks, agents, settings
+    case home, chat, usage, models, discover, benchmarks, agents, experimental, settings
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -14,6 +14,7 @@ enum Page: String, CaseIterable, Identifiable {
         case .discover: return "Discover"
         case .benchmarks: return "Benchmarks"
         case .agents: return "Coding Agents"
+        case .experimental: return "iPhone Offload"
         case .settings: return "Settings"
         }
     }
@@ -26,6 +27,7 @@ enum Page: String, CaseIterable, Identifiable {
         case .discover: return "sparkle.magnifyingglass"
         case .benchmarks: return "gauge.with.dots.needle.67percent"
         case .agents: return "terminal"
+        case .experimental: return "iphone.gen3.radiowaves.left.and.right"
         case .settings: return "gearshape"
         }
     }
@@ -35,10 +37,11 @@ enum Page: String, CaseIterable, Identifiable {
         case .home, .chat, .usage: return nil
         case .models, .discover, .benchmarks: return "Models"
         case .agents: return "Agents"
+        case .experimental: return "Experimental"
         case .settings: return "App"
         }
     }
-    static let sections = ["Models", "Agents", "App"]
+    static let sections = ["Models", "Agents", "Experimental", "App"]
 }
 
 /// App-wide state shared by the main window and the menu bar.
@@ -111,6 +114,13 @@ final class AppStore: ObservableObject {
     private init() {
         Downloads.shared.finished = { [weak self] spec in
             Task { await self?.scan(); self?.notice = "\(spec) downloaded." }
+        }
+        // Models on an external drive appear and disappear with it.
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in await self?.scan() }
+            }
         }
     }
 
