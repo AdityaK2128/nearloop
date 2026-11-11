@@ -266,6 +266,11 @@ final class Downloads: ObservableObject {
 
     /// Starts or resumes a download. Ignored while one for the same model is preparing, running or pausing.
     func start(_ spec: String, title: String, expectedBytes: Int64) {
+        if attachments[spec] != nil { startFiles(spec, title: title, expectedBytes: expectedBytes); return }
+        // A model's drafter comes along whenever the model starts or resumes.
+        if let drafter = attachedDrafter(of: spec), jobs[drafter]?.state != .finished, jobs[drafter]?.busy != true {
+            startFiles(drafter, title: "\(spec) drafter", expectedBytes: jobs[drafter]?.expected ?? 0)
+        }
         guard processes[spec] == nil, jobs[spec]?.busy != true else { return }
         if var job = jobs[spec] {
             // Resuming: keep the progress already on disk instead of dropping back to zero.
@@ -343,8 +348,11 @@ final class Downloads: ObservableObject {
         finished(spec)
     }
 
-    /// Drafter download → the model download it belongs to.
-    private var attachments: [String: String] = [:]
+    /// Drafter download → the model download it belongs to. Kept across launches, so a paused pair resumes
+    /// together.
+    private var attachments: [String: String] = UserDefaults.standard.dictionary(forKey: "downloadAttachments") as? [String: String] ?? [:] {
+        didSet { UserDefaults.standard.set(attachments, forKey: "downloadAttachments") }
+    }
 
     /// Once both are downloaded, the drafter moves into the model's folder as dflash2/, which makes it that
     /// model's own drafter (see ModelScanner.pairDrafters).
@@ -352,10 +360,113 @@ final class Downloads: ObservableObject {
 
     func attachedDrafter(of model: String) -> String? { attachments.first { $0.value == model }?.key }
 
+    /// Downloads a repository's config and weights straight from Hugging Face with curl (resumable), checking
+    /// each file's SHA-256. For drafters, which `kapitsa pull` doesn't take (it pulls Qwen3.5-family models).
+    func startFiles(_ repo: String, title: String, expectedBytes: Int64) {
+        guard processes[repo] == nil, jobs[repo]?.busy != true, jobs[repo]?.state != .finished else { return }
+        if var job = jobs[repo] {
+            job.state = .preparing
+            jobs[repo] = job
+        } else {
+            jobs[repo] = Job(id: repo, title: title, expected: expectedBytes)
+        }
+        let folder = Kapitsa.downloads.appendingPathComponent(repo.replacingOccurrences(of: "/", with: "--"))
+        jobs[repo]?.folder = folder
+        Task { await fetchFiles(repo, into: folder) }
+    }
+
+    private func fetchFiles(_ repo: String, into folder: URL) async {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: URL(string: "https://huggingface.co/api/models/\(repo)?blobs=true")!)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw Kapitsa.Failure(errorDescription: "\(repo) is not available on Hugging Face.")
+            }
+            // Top-level config and weights only: no README, images or other folders.
+            let files: [(name: String, size: Int64, sha: String?)] = ((object["siblings"] as? [[String: Any]]) ?? []).compactMap {
+                guard let name = $0["rfilename"] as? String, !name.contains("/"),
+                      name.hasSuffix(".json") || name.hasSuffix(".safetensors") else { return nil }
+                return (name, Int64(($0["size"] as? Int) ?? 0), ($0["lfs"] as? [String: Any])?["sha256"] as? String)
+            }
+            guard files.contains(where: { $0.name.hasSuffix(".safetensors") }) else {
+                throw Kapitsa.Failure(errorDescription: "\(repo) has no weights to download.")
+            }
+            jobs[repo]?.expected = files.reduce(0) { $0 + $1.size }
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            guard jobs[repo]?.state == .preparing else { jobs[repo]?.state = .paused; return }
+            jobs[repo]?.state = .running
+            track(repo)
+            for file in files {
+                let target = folder.appendingPathComponent(file.name)
+                let size = ((try? FileManager.default.attributesOfItem(atPath: target.path)[.size]) as? NSNumber)?.int64Value
+                if size == file.size { continue }  // finished and checked in an earlier run
+                let partial = folder.appendingPathComponent(file.name + ".part")
+                let address = "https://huggingface.co/\(repo)/resolve/main/\(file.name)"
+                jobs[repo]?.lastLine = "Downloading \(file.name)…"
+                let code = await runToEnd(repo, "/usr/bin/curl", ["-fsSL", "--retry", "3", "-C", "-", "-o", partial.path, address])
+                if jobs[repo]?.state == .pausing { jobs[repo]?.state = .paused; return }
+                guard code == 0 else { throw Kapitsa.Failure(errorDescription: "Downloading \(file.name) failed (curl \(code)). Retry to resume it.") }
+                if let sha = file.sha {
+                    jobs[repo]?.lastLine = "Checking \(file.name)…"
+                    let path = partial.path
+                    let sum = await Task.detached { (try? Kapitsa.runSync("/usr/bin/shasum", ["-a", "256", path], timeout: 1800))?.output }.value
+                    guard sum?.split(separator: " ").first.map(String.init) == sha else {
+                        try? FileManager.default.removeItem(at: partial)
+                        throw Kapitsa.Failure(errorDescription: "\(file.name) didn’t match its checksum and was removed. Retry to download it again.")
+                    }
+                }
+                try? FileManager.default.removeItem(at: target)
+                try FileManager.default.moveItem(at: partial, to: target)
+            }
+            complete(repo)
+        } catch {
+            jobs[repo]?.state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Runs a process as this download's current one (so Pause stops it) and waits for it to end.
+    private func runToEnd(_ spec: String, _ executable: String, _ arguments: [String]) async -> Int32 {
+        await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            process.terminationHandler = { finished in
+                Task { @MainActor in
+                    self.processes[spec] = nil
+                    continuation.resume(returning: finished.terminationStatus)
+                }
+            }
+            do {
+                try process.run()
+                processes[spec] = process
+            } catch {
+                continuation.resume(returning: -1)
+            }
+        }
+    }
+
+    /// Progress from the size of the folder being filled, while the download runs.
+    private func track(_ spec: String) {
+        Task { [weak self] in
+            while let self, [.running, .pausing].contains(self.jobs[spec]?.state) {
+                if let folder = self.jobs[spec]?.folder {
+                    let size = await Task.detached { SystemMemory.allocatedBytes(folder) }.value
+                    self.jobs[spec]?.done = size
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
     private func placeDrafters() {
         for (drafter, model) in attachments {
+            let modelFolder = jobs[model]?.folder ?? Kapitsa.downloads.appendingPathComponent(model.replacingOccurrences(of: "/", with: "--"))
             guard jobs[drafter]?.state == .finished, jobs[model]?.state == .finished,
-                  let source = jobs[drafter]?.folder, let target = jobs[model]?.folder?.appendingPathComponent("dflash2") else { continue }
+                  let source = jobs[drafter]?.folder else { continue }
+            let target = modelFolder.appendingPathComponent("dflash2")
             attachments[drafter] = nil
             if FileManager.default.fileExists(atPath: target.path) { continue }
             do { try FileManager.default.moveItem(at: source, to: target) } catch {

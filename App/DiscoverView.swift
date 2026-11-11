@@ -267,7 +267,10 @@ private struct HuggingFaceRow: View {
         // A job's state wins over the folder: a paused download already has some files on disk.
         switch job?.state {
         case .preparing?, .running?:
-            Button("Pause") { downloads.pause(model.id) }
+            Button("Pause") {
+                downloads.pause(model.id)
+                if let drafter = downloads.attachedDrafter(of: model.id) { downloads.pause(drafter) }
+            }
         case .pausing?:
             Button("Pausing…") {}.disabled(true)
         case .paused?:
@@ -277,7 +280,12 @@ private struct HuggingFaceRow: View {
         default:
             // The folder may hold an MLX model or GGUF files; either counts once the scan finds it usable.
             let usable = store.models.contains { ($0.path == folder.path || $0.path.hasPrefix(folder.path + "/")) && $0.available }
-            if job?.state == .finished || usable {
+            if let drafter = downloads.attachedDrafter(of: model.id), let state = downloads.jobs[drafter]?.state,
+               state != .finished, !(downloads.jobs[drafter]?.busy ?? false) {
+                Button(state == .paused ? "Resume Drafter" : "Retry Drafter") {
+                    downloads.startFiles(drafter, title: "\(name) drafter", expectedBytes: downloads.jobs[drafter]?.expected ?? 0)
+                }
+            } else if job?.state == .finished || usable {
                 Label("Downloaded", systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green)
             } else if FileManager.default.fileExists(atPath: folder.path) {
                 // An unfinished download from an earlier session: its job is gone, its files remain.
