@@ -387,7 +387,8 @@ struct DownloadProgressLine: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if job.state == .preparing && job.done == 0 {
+            // Without a known total a filled fraction would be wrong, so the bar only shows activity.
+            if (job.state == .preparing && job.done == 0) || (job.state == .running && job.expected <= 0) {
                 ProgressView().progressViewStyle(.linear)
             } else {
                 ProgressView(value: job.fraction).tint(job.state == .running ? .accentColor : .secondary)

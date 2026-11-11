@@ -281,6 +281,8 @@ final class Downloads: ObservableObject {
             jobs[spec] = Job(id: spec, title: title, expected: expectedBytes)
         }
         Task {
+            // Resumed without a size (after a relaunch, before Verify): ask Hugging Face for the total.
+            if jobs[spec]?.expected ?? 0 <= 0, let total = await Self.repositorySize(spec) { jobs[spec]?.expected = total }
             do {
                 let plan = try await Kapitsa.run(["pull", spec, "--dry-run", "--json"], timeout: 60)
                 let json = plan.output.split(separator: "\n").last { $0.hasPrefix("{") }.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
@@ -422,6 +424,17 @@ final class Downloads: ObservableObject {
         } catch {
             jobs[repo]?.state = .failed(error.localizedDescription)
         }
+    }
+
+    /// Total bytes of a Hugging Face repository ("org/name"); nil for catalog names or when offline.
+    static func repositorySize(_ spec: String) async -> Int64? {
+        guard HuggingFace.repositoryID(spec) == spec,
+              let url = URL(string: "https://huggingface.co/api/models/\(spec)?blobs=true"),
+              let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let total = ((object["siblings"] as? [[String: Any]]) ?? []).reduce(Int64(0)) { $0 + Int64(($1["size"] as? Int) ?? 0) }
+        return total > 0 ? total : nil
     }
 
     /// Runs a process as this download's current one (so Pause stops it) and waits for it to end.
