@@ -133,7 +133,7 @@ private struct HuggingFaceSection: View {
             HStack(spacing: 10) {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search MLX models", text: $query).textFieldStyle(.plain).onSubmit(search)
+                    TextField("Search MLX models, or paste a Hugging Face link", text: $query).textFieldStyle(.plain).onSubmit(search)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
@@ -159,7 +159,9 @@ private struct HuggingFaceSection: View {
         searching = true
         error = ""
         Task {
-            do { results = try await HuggingFace.search(query) } catch { self.error = error.localizedDescription }
+            // A pasted model address or org/name searches for that repository.
+            let text = HuggingFace.repositoryID(query) ?? query
+            do { results = try await HuggingFace.search(text) } catch { self.error = error.localizedDescription }
             searching = false
         }
     }
@@ -171,6 +173,7 @@ private struct HuggingFaceRow: View {
     @ObservedObject var store = AppStore.shared
     @State private var details: HuggingFace.Details?
     @State private var checking = false
+    @State private var withDrafter = true
 
     var folder: URL { Kapitsa.downloads.appendingPathComponent(model.id.replacingOccurrences(of: "/", with: "--")) }
     var owner: String { String(model.id.split(separator: "/").first ?? "") }
@@ -184,7 +187,57 @@ private struct HuggingFaceRow: View {
                 action.controlSize(.regular).fixedSize()
             }
             if let job = downloads.jobs[model.id], job.showsProgress { DownloadProgressLine(job: job) }
+            if let drafter = details?.drafter ?? downloads.attachedDrafter(of: model.id),
+               let job = downloads.jobs[drafter], job.showsProgress { DownloadProgressLine(job: job) }
         }.card(padding: 16)
+    }
+
+    /// Bytes this download needs: the model, plus its drafter when that is included.
+    private var neededBytes: Int64 {
+        guard let details else { return 0 }
+        return details.bytes + (withDrafter && details.drafter != nil ? details.drafterBytes : 0)
+    }
+
+    private var freeBytes: Int64 {
+        var folder = Kapitsa.downloads
+        while !FileManager.default.fileExists(atPath: folder.path), folder.pathComponents.count > 1 { folder.deleteLastPathComponent() }
+        return (try? folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? .max
+    }
+
+    private var spaceProblem: String? {
+        let need = neededBytes, free = freeBytes
+        guard need > 0, free < need + 2_000_000_000 else { return nil }
+        return String(format: "Needs %.1f GB and %.1f GB is free on the disk that holds downloads (Settings › Storage).",
+                      Double(need) / 1e9, Double(free) / 1e9)
+    }
+
+    @ViewBuilder private var speedups: some View {
+        if let details, details.problem == nil {
+            HStack(spacing: 12) {
+                Label(details.hasMTP ? "MTP heads included" : "No MTP heads",
+                      systemImage: details.hasMTP ? "bolt.fill" : "bolt.slash")
+                    .foregroundStyle(details.hasMTP ? .green : .secondary)
+                    .help(details.hasMTP ? "Kapitsa drafts several tokens per step with the model’s own MTP heads." : "This upload has no multi-token-prediction heads.")
+                if let drafter = details.drafter {
+                    Toggle(isOn: $withDrafter) {
+                        Text(String(format: "Add DFlash2 drafter (%.1f GB)", Double(details.drafterBytes) / 1e9))
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(downloads.jobs[model.id]?.busy == true)
+                    .help("\(drafter): built for a model of exactly this shape, from Kapitsa’s catalog. It is placed in the model’s folder as dflash2/. On a fine-tuned model fewer drafted tokens are accepted, so the gain can be smaller.")
+                    if let card = URL(string: "https://huggingface.co/\(drafter)") { Link("Drafter ↗", destination: card) }
+                }
+            }.font(.caption)
+        }
+    }
+
+    private func startDownload(expected: Int64) {
+        downloads.start(model.id, title: model.id, expectedBytes: expected)
+        if withDrafter, let drafter = details?.drafter {
+            downloads.attach(drafter: drafter, to: model.id)
+            downloads.start(drafter, title: "\(name) drafter", expectedBytes: details?.drafterBytes ?? 0)
+        }
     }
 
     private var summary: some View {
@@ -203,7 +256,8 @@ private struct HuggingFaceRow: View {
                         FitBadge(gigabytes: Double(details.bytes) / 1e9)
                     }
                 }.font(.caption).labelStyle(.titleAndIcon)
-                if let problem = details?.problem { Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+                if let problem = details?.problem ?? spaceProblem { Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+                speedups
             }
     }
 
@@ -230,8 +284,8 @@ private struct HuggingFaceRow: View {
                 Button("Resume") { downloads.start(model.id, title: model.id, expectedBytes: expected) }
                     .help("This download didn’t finish; resume it")
             } else if let details {
-                Button("Download") { downloads.start(model.id, title: model.id, expectedBytes: details.bytes) }
-                    .disabled(details.problem != nil)
+                Button("Download") { startDownload(expected: details.bytes) }
+                    .disabled(details.problem != nil || spaceProblem != nil)
             } else {
                 verifyButton
             }
@@ -242,7 +296,8 @@ private struct HuggingFaceRow: View {
             Button(checking ? "Verifying…" : "Verify") {
                 checking = true
                 Task {
-                    details = try? await HuggingFace.details(model.id)
+                    let drafters = Array(Set(store.catalogDetails.values.flatMap(\.drafters))).sorted()
+                    details = try? await HuggingFace.details(model.id, drafters: drafters)
                     if details == nil { details = HuggingFace.Details(bytes: 0, problem: "Repository unavailable.") }
                     checking = false
                 }

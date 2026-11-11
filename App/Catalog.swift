@@ -101,6 +101,8 @@ enum Catalog {
     struct Details: Equatable {
         let repo: String?
         let speedups: [String]
+        /// Hugging Face repositories of this family's DFlash drafters (offered to matching downloaded models).
+        var drafters: [String] = []
 
         var modelCard: URL? { repo.flatMap { URL(string: "https://huggingface.co/\($0)") } }
     }
@@ -114,13 +116,15 @@ enum Catalog {
               let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return nil }
         // Kapitsa names companions by kind ("mtp", "mtp-sidecar", "dflash2", "dflash", …); any other kind is
         // still a drafter of some sort.
-        var speedups: [String] = []
-        for kind in ((json["companions"] as? [[String: Any]]) ?? []).compactMap({ ($0["kind"] as? String)?.lowercased() }) {
+        var speedups: [String] = [], drafters: [String] = []
+        for companion in (json["companions"] as? [[String: Any]]) ?? [] {
+            guard let kind = (companion["kind"] as? String)?.lowercased() else { continue }
             let name = kind.hasPrefix("mtp") ? "MTP" : kind.contains("dflash") ? "DFlash" : "Drafter"
             if !speedups.contains(name) { speedups.append(name) }
+            if kind.contains("dflash"), let repo = companion["repo"] as? String, !drafters.contains(repo) { drafters.append(repo) }
         }
         if about.localizedCaseInsensitiveContains("prompt lookup") { speedups.append("Prompt lookup") }
-        return Details(repo: json["repo"] as? String, speedups: speedups)
+        return Details(repo: json["repo"] as? String, speedups: speedups, drafters: drafters)
     }
 
     static func fits(_ variant: CatalogVariant) -> Bool { Kapitsa.fitLabel(gigabytes: variant.gigabytes).hasPrefix("Fits") }
@@ -159,6 +163,11 @@ enum HuggingFace {
     struct Details {
         let bytes: Int64
         let problem: String?
+        /// The repository ships MTP heads (multi-token prediction), which Kapitsa uses as they are.
+        var hasMTP = false
+        /// A DFlash drafter from Kapitsa's catalog whose shape matches this model, and its size.
+        var drafter: String?
+        var drafterBytes: Int64 = 0
     }
 
     static func search(_ query: String) async throws -> [Model] {
@@ -172,7 +181,7 @@ enum HuggingFace {
     }
 
     /// Download size and whether the repository's config is one Kapitsa runs.
-    static func details(_ id: String) async throws -> Details {
+    static func details(_ id: String, drafters: [String] = []) async throws -> Details {
         let info = URL(string: "https://huggingface.co/api/models/\(id)?blobs=true")!
         let (data, _) = try await URLSession.shared.data(from: info)
         let object = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
@@ -187,7 +196,45 @@ enum HuggingFace {
         guard ModelScanner.family(config) == "qwen" else {
             return Details(bytes: bytes, problem: "Unsupported architecture: \(config["model_type"] as? String ?? "unknown"). Hugging Face downloads support Qwen3.5-family MLX models.")
         }
-        return Details(bytes: bytes, problem: ModelScanner.quantizationError(config))
+        var result = Details(bytes: bytes, problem: ModelScanner.quantizationError(config))
+        // MTP heads live in the weights (mtp.* tensors) or in a file of their own.
+        let names = siblings.compactMap { $0["rfilename"] as? String }
+        if names.contains(where: { URL(fileURLWithPath: $0).lastPathComponent.lowercased().hasPrefix("mtp") }) {
+            result.hasMTP = true
+        } else if names.contains("model.safetensors.index.json"),
+                  let index = try? await json("https://huggingface.co/\(id)/resolve/main/model.safetensors.index.json"),
+                  let map = index["weight_map"] as? [String: Any] {
+            result.hasMTP = map.keys.contains { $0.hasPrefix("mtp.") || $0.contains(".mtp.") }
+        }
+        // A drafter fits when it was built for a model of exactly this shape (layers, width, vocabulary).
+        if let signature = ModelScanner.targetSignature(config) {
+            for repo in drafters {
+                guard let draft = try? await json("https://huggingface.co/\(repo)/resolve/main/config.json"),
+                      ModelScanner.drafterSignature(draft) == signature else { continue }
+                result.drafter = repo
+                let info = try? await json("https://huggingface.co/api/models/\(repo)?blobs=true")
+                result.drafterBytes = ((info?["siblings"] as? [[String: Any]]) ?? []).reduce(0) { $0 + Int64(($1["size"] as? Int) ?? 0) }
+                break
+            }
+        }
+        return result
+    }
+
+    private static func json(_ address: String) async throws -> [String: Any]? {
+        guard let url = URL(string: address) else { return nil }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// "org/name" from a repository id or a huggingface.co address.
+    static func repositoryID(_ text: String) -> String? {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = value.range(of: "huggingface.co/") { value = String(value[range.upperBound...]) }
+        let parts = value.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+        guard parts.count >= 2, parts[0] != "models", parts[0] != "datasets", parts[0] != "spaces" else { return nil }
+        let id = "\(parts[0])/\(parts[1])"
+        return id.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil ? id : nil
     }
 }
 
@@ -292,7 +339,29 @@ final class Downloads: ObservableObject {
     private func complete(_ spec: String) {
         jobs[spec]?.state = .finished
         jobs[spec]?.done = jobs[spec]?.expected ?? 0
+        placeDrafters()
         finished(spec)
+    }
+
+    /// Drafter download → the model download it belongs to.
+    private var attachments: [String: String] = [:]
+
+    /// Once both are downloaded, the drafter moves into the model's folder as dflash2/, which makes it that
+    /// model's own drafter (see ModelScanner.pairDrafters).
+    func attach(drafter: String, to model: String) { attachments[drafter] = model }
+
+    func attachedDrafter(of model: String) -> String? { attachments.first { $0.value == model }?.key }
+
+    private func placeDrafters() {
+        for (drafter, model) in attachments {
+            guard jobs[drafter]?.state == .finished, jobs[model]?.state == .finished,
+                  let source = jobs[drafter]?.folder, let target = jobs[model]?.folder?.appendingPathComponent("dflash2") else { continue }
+            attachments[drafter] = nil
+            if FileManager.default.fileExists(atPath: target.path) { continue }
+            do { try FileManager.default.moveItem(at: source, to: target) } catch {
+                jobs[drafter]?.lastLine = "Drafter kept at \(source.path): \(error.localizedDescription)"
+            }
+        }
     }
 
     /// Pauses a download; it shows "Pausing…" until Kapitsa has stopped, then "Paused".
