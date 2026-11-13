@@ -42,6 +42,12 @@ enum Page: String, CaseIterable, Identifiable {
         }
     }
     static let sections = ["Models", "Agents", "Experimental", "App"]
+
+    /// Experimental pages appear only after "Show Experimental Features" is turned on in Settings › General.
+    static let experimentalKey = "showExperimental"
+    static func visible(experimental: Bool) -> [Page] {
+        allCases.filter { experimental || $0.section != "Experimental" }
+    }
 }
 
 /// App-wide state shared by the main window and the menu bar.

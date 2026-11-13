@@ -7,14 +7,16 @@ struct MainWindow: View {
     @ObservedObject var server = ServerController.shared
     @ObservedObject var downloads = Downloads.shared
     @ObservedObject var updater = Updater.shared
+    @AppStorage(Page.experimentalKey) private var experimental = false
 
     var body: some View {
+        let pages = Page.visible(experimental: experimental)
         NavigationSplitView {
             List(selection: Binding(get: { store.page }, set: { if let page = $0 { store.page = page } })) {
-                ForEach(Page.allCases.filter { $0.section == nil }, id: \.self) { row($0) }
-                ForEach(Page.sections, id: \.self) { section in
+                ForEach(pages.filter { $0.section == nil }, id: \.self) { row($0) }
+                ForEach(Page.sections.filter { section in pages.contains { $0.section == section } }, id: \.self) { section in
                     Section(section) {
-                        ForEach(Page.allCases.filter { $0.section == section }, id: \.self) { row($0) }
+                        ForEach(pages.filter { $0.section == section }, id: \.self) { row($0) }
                     }
                 }
             }
@@ -244,17 +246,24 @@ struct NearloopApp: App {
             CommandGroup(after: .newItem) {
                 Button("Add Model Folder…") { AppStore.shared.addLibrary() }.keyboardShortcut("o")
             }
-            CommandMenu("Go") {
-                ForEach(Array(Page.allCases.enumerated()), id: \.element) { index, page in
-                    Button(page.title) { AppStore.shared.page = page }
-                        .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
-                }
-            }
+            CommandMenu("Go") { GoMenu() }
         }
         MenuBarExtra {
             MenuBarContent()
         } label: {
             Image(nsImage: MenuBarIcon.image(active: server.phase == .ready))
+        }
+    }
+}
+
+/// The Go menu: one item per visible page, numbered ⌘1… in sidebar order.
+struct GoMenu: View {
+    @AppStorage(Page.experimentalKey) private var experimental = false
+
+    var body: some View {
+        ForEach(Array(Page.visible(experimental: experimental).enumerated()), id: \.element) { index, page in
+            Button(page.title) { AppStore.shared.page = page }
+                .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
         }
     }
 }

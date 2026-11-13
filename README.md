@@ -69,6 +69,8 @@ Other apps can use the running model too. The base URL is `http://127.0.0.1:8000
 
 ### iPhone Offload (Experimental)
 
+Hidden by default: turn on **Settings › General › Show Experimental Features** to add it to the sidebar.
+
 An iPhone can read part of a long prompt. While a prompt is prefilled, the Mac runs the model's first layers and the phone runs the last ones, over the USB cable; the two overlap chunk by chunk. Replies are still written by the Mac, which keeps the whole model.
 
 - **Needs:** [oMLX](https://github.com/jundot/omlx) installed (Nearloop runs it with the phone hook added in memory; oMLX itself is not changed), Xcode for its `devicectl` tool, and the Tail Worker app from the getFaster project on the phone. A USB‑C cable; Wi‑Fi works but is slow.

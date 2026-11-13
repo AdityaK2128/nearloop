@@ -102,6 +102,7 @@ struct OpenSettingsButton: View {
 struct GeneralSettings: View {
     @AppStorage("terminalApp") private var terminal = "terminal"
     @AppStorage("autoStartLastModel") private var autoStart = false
+    @AppStorage(Page.experimentalKey) private var experimental = false
     @State private var loginItem = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -120,6 +121,14 @@ struct GeneralSettings: View {
                 }
             } footer: {
                 Text("Nearloop keeps running in the menu bar when its window is closed, so the server and the Quick Chat shortcut stay available.")
+            }
+            Section {
+                Toggle("Show Experimental Features", isOn: Binding(get: { experimental }, set: { on in
+                    experimental = on
+                    if !on, AppStore.shared.page.section == "Experimental" { AppStore.shared.page = .settings }
+                }))
+            } footer: {
+                Text("Adds an Experimental section to the sidebar with features that are still being tested, such as iPhone Offload. They need extra setup and may change or be removed.")
             }
             UpdateSettings()
         }.formStyle(.grouped)
