@@ -4,8 +4,8 @@
 set -euo pipefail
 project_dir=${0:A:h}
 app="$project_dir/Nearloop.app"
-version=${APP_VERSION:-3.6.1}
-build=${APP_BUILD:-14}
+version=${APP_VERSION:-3.7}
+build=${APP_BUILD:-15}
 
 # The Kapitsa binary to bundle: KAPITSA_BIN, else the installed Homebrew copy, else vendor/kapitsa
 # (bin/kapitsa with share/kapitsa/LICENSE and THIRD_PARTY_NOTICES beside it, as Homebrew lays it out).
