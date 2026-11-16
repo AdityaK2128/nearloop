@@ -13,6 +13,9 @@ struct UpdateSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(headline).font(.title3.weight(.semibold))
                     Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let release = updater.updateAvailable {
+                        Link("Release Page ↗", destination: release.page).font(.callout)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -91,7 +94,9 @@ struct UpdateSheet: View {
             default:
                 if let release = updater.updateAvailable {
                     Button("Skip This Version") { updater.skip(release) }
-                    Link("Release Page ↗", destination: release.page).font(.callout).padding(.leading, 6)
+                        .help("Don’t offer \(release.version) again. A newer version is still offered.")
+                    Button("Don’t Remind Me") { updater.stopReminding() }
+                        .help("Turns off automatic update checks. Turn them on again in Settings › General; Check for Updates… still works.")
                     Spacer()
                     Button("Later") { updater.showSheet = false }.keyboardShortcut(.cancelAction)
                     if Updater.installProblem == nil && release.download != nil {

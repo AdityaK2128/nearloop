@@ -63,16 +63,22 @@ final class Updater: ObservableObject {
 
     // MARK: Checking
 
-    /// Checks on launch and then every few hours, at most once a day, when automatic checks are on.
+    /// When automatic checks are on: checks at every launch and offers an update the user hasn't skipped
+    /// (Skip This Version, or Don't Remind Me to stop these checks); then checks once a day while open,
+    /// which only updates the sidebar and menu.
     func startAutomaticChecks() {
         Self.cleanUpLeftovers()
         Task {
+            if Prefs.checkForUpdates, !busy {
+                await check(userInitiated: false)
+                if Prefs.checkForUpdates, pendingUpdate != nil, phase == .available { showSheet = true }
+            }
             while true {
+                try? await Task.sleep(for: .seconds(6 * 3600))
                 let last = UserDefaults.standard.double(forKey: "lastUpdateCheck")
                 if Prefs.checkForUpdates, Date().timeIntervalSince1970 - last > 24 * 3600, !busy {
                     await check(userInitiated: false)
                 }
-                try? await Task.sleep(for: .seconds(6 * 3600))
             }
         }
     }
@@ -131,6 +137,12 @@ final class Updater: ObservableObject {
 
     func skip(_ release: AppRelease) {
         UserDefaults.standard.set(release.version, forKey: "skippedVersion")
+        showSheet = false
+    }
+
+    /// Turns off automatic checks (Settings › General turns them on again); manual checks still work.
+    func stopReminding() {
+        UserDefaults.standard.set(false, forKey: "checkForUpdates")
         showSheet = false
     }
 

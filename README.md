@@ -18,7 +18,7 @@ A Mac app for running language models locally and using them with coding agents:
 - **Measure** writing and reading speed, time to first token, tool-call support and peak memory with Kapitsa's own benchmark. The benchmark stops itself if memory pressure turns critical.
 - **Use your existing models.** Add any folders, on any drive; MLX folders and GGUF files are detected from their config and file header. GGUFs can be converted for Kapitsa. Move a model to another folder or drive, or to the Trash, from Library.
 - **Stays out of the way.** A menu bar icon keeps the server one click away after you close the window. Optionally open at login and load your last model automatically.
-- **Updates itself.** Nearloop checks GitHub Releases once a day (or when you choose Check for Updates), and installs a new version in place after verifying it is signed by the same developer.
+- **Updates itself.** Nearloop checks GitHub Releases each time it opens (and once a day while open, or when you choose Check for Updates) and offers a new version: install it, choose Later, Skip This Version, or Don’t Remind Me to turn off the automatic checks. It installs in place after verifying the new version is signed by the same developer.
 
 ## Screenshots
 
