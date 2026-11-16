@@ -232,6 +232,8 @@ final class Offload: ObservableObject {
     /// Whether the engine on `port` is this one (Home and the menu name it).
     func owns(port: Int) -> Bool { (running || state == .starting) && saved.pid != 0 && saved.port == port }
     var externalName: String { owns(port: Prefs.port) ? "\(saved.modelName) with iPhone" : "External Server" }
+    /// Serving on Nearloop's port, so the app treats it as its loaded model: chat, agents, Stop.
+    var serving: Bool { owns(port: Prefs.port) }
 
     // MARK: - Checks
 
@@ -776,7 +778,10 @@ final class Offload: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: engine.python)
         process.arguments = arguments
-        process.environment = environment()
+        var env = environment()
+        // The context agents are told when oMLX doesn't report one (serve.py's model listing).
+        if let context = model.nativeContext { env["NEARLOOP_MODEL_CONTEXT"] = String(context) }
+        process.environment = env
         process.currentDirectoryURL = folder
         process.standardOutput = logHandle
         process.standardError = logHandle

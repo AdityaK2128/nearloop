@@ -39,6 +39,7 @@ struct HomeView: View {
 
     private var agentDetail: String {
         if server.phase == .ready, let record = server.record { return "Connected to \(record.modelName)" }
+        if server.phase == .external { return "Connected to \(Offload.shared.externalName)" }
         if let model = store.agentModel { return "Default model: \(model.name)" }
         return "Requires a downloaded model"
     }
@@ -132,6 +133,9 @@ private struct ServerCard: View {
             if server.owned {
                 Button("Logs") { store.showLog = true }
                 Button("Stop", role: .destructive) { server.stop() }.disabled(server.phase == .stopping)
+            } else if server.phase == .external, Offload.shared.serving {
+                Button("Details") { store.page = .experimental }
+                Button("Stop", role: .destructive) { Offload.shared.stop() }
             }
             if !server.running {
                 Button("Choose Model…") { store.page = .models }

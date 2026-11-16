@@ -74,13 +74,17 @@ enum Agents {
         if !apiKey.isEmpty { command += ["--api-key", apiKey] }
         if name == "pi" { command += ["--", "--thinking", "off"] }
         let env = Kapitsa.environment()
-        var script = "#!/bin/zsh\nset -euo pipefail\n"
+        var script = "#!/bin/zsh\nset -uo pipefail\n"
         for key in ["PATH", "KAPITSA_NO_AUTO_UPDATE", "KAPITSA_HOME", "HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME"] {
             if let value = env[key] { script += "export \(key)=\(quote(value))\n" }
         }
         script += "cd \(quote(project.path))\n"
         script += "clear\nprint \(quote("\(displayName(name)) on Kapitsa · \(project.lastPathComponent)"))\n"
-        script += "exec " + command.map(quote).joined(separator: " ") + "\n"
+        // Not exec: when the agent can't start, the window stays open so its message can be read.
+        script += command.map(quote).joined(separator: " ") + "\n"
+        script += "code=$?\nif (( code != 0 )); then\n"
+        script += "  print\n  print -r -- \(quote(displayName(name) + " exited with an error (code"))\" $code). Press Return to close this window.\"\n"
+        script += "  read -r\nfi\nexit $code\n"
 
         let folder = AppPaths.folder("launchers")
         cleanOldLaunchers(folder)

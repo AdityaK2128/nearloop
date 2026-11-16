@@ -75,7 +75,7 @@ An iPhone can read part of a long prompt. While a prompt is prefilled, the Mac r
 
 - **Needs:** [oMLX](https://github.com/jundot/omlx) installed (Nearloop runs it with the phone hook added in memory; oMLX itself is not changed), Xcode for its `devicectl` tool, and the Tail Worker app from the getFaster project on the phone. A USB‑C cable; Wi‑Fi works but is slow.
 - **Models:** any MLX model in your Library whose layers the worker can run: Qwen3.5/3.6/3.8 (dense and MoE), Qwen3, Qwen2, Llama and Mistral families. The page checks each model.
-- **Start with iPhone** measures the phone's memory once, works out how many of the model's layers fit, copies them to the phone (one file, replaced when you switch models) and serves on the usual port, so Chat and the agents use it. Prompts over 2K tokens (adjustable) are split.
+- **Start with iPhone** measures the phone's memory once, works out how many of the model's layers fit, copies them to the phone (one file, replaced when you switch models) and serves on the usual port. It then counts as the loaded model everywhere: Chat, the Coding Agents page and the menu bar's Launch Agent, `kapitsa claude`/`codex`/`opencode`/`pi` from any terminal, and Stop on Home and in the sidebar. Prompts over 2K tokens (adjustable) are split.
 - **Benchmark** reads the same 4K–16K-token prompt with the Mac alone and with the phone, and tells you whether the phone is worth using for that model.
 
 ### Settings
