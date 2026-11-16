@@ -109,9 +109,19 @@ final class Offload: ObservableObject {
             let seconds: Double
             let prompt: Int?
             let firstToken: Double?
-            /// Tokens per second after the first one. Without a first-token time only a reply to a short prompt
-            /// is timed as a whole: a long prompt's reading would count as writing.
+            /// From oMLX's drafting summary of the reply: its tokens and the seconds spent writing them.
+            var drafted: (tokens: Int, seconds: Double)? = nil
+            /// Tokens each drafting step wrote, on average.
+            var perStep: Double? = nil
+            static func == (a: Request, b: Request) -> Bool {
+                a.tokens == b.tokens && a.seconds == b.seconds && a.prompt == b.prompt && a.firstToken == b.firstToken
+                    && a.drafted?.tokens == b.drafted?.tokens && a.drafted?.seconds == b.drafted?.seconds && a.perStep == b.perStep
+            }
+            /// Tokens per second while writing: from the drafting summary when there is one, else after the first
+            /// token. Without either only a reply to a short prompt is timed as a whole: a long prompt's reading
+            /// would count as writing.
             var writing: Double? {
+                if let drafted, drafted.tokens > 0, drafted.seconds > 0.05 { return Double(drafted.tokens) / drafted.seconds }
                 if let first = firstToken, tokens > 1, seconds - first > 0.05 { return Double(tokens - 1) / (seconds - first) }
                 guard firstToken == nil, let prompt, prompt < 1_000, tokens > 0, seconds > 0 else { return nil }
                 return Double(tokens) / seconds
@@ -824,6 +834,9 @@ final class Offload: ObservableObject {
         var env = environment()
         // The context agents are told when oMLX doesn't report one (serve.py's model listing).
         if let context = model.nativeContext { env["NEARLOOP_MODEL_CONTEXT"] = String(context) }
+        // The drafter Kapitsa would pair with this model drafts here too (serve.py's choose_drafter).
+        env["NEARLOOP_MODEL_ID"] = id
+        if !model.drafter.isEmpty { env["NEARLOOP_DFLASH_DRAFT"] = Kapitsa.loadPath(for: model.drafter) }
         process.environment = env
         process.currentDirectoryURL = folder
         process.standardOutput = logHandle
@@ -983,7 +996,11 @@ final class Offload: ObservableObject {
         let pattern = #"(\d+) tokens in ([\d.]+)s \([\d.]+ tok/s\)(?:, prompt: (\d+))?(?:.*?stream_model_ttft=([\d.]+)s)?"#
         // The iPhone's part of a prompt, logged before the reply: "phone prefill: 5641 tokens in 39.20 s (144 tok/s)".
         let phonePattern = #"phone prefill: (\d+) tokens in ([\d.]+) s"#
-        guard let regex = try? NSRegularExpression(pattern: pattern), let phoneRegex = try? NSRegularExpression(pattern: phonePattern) else { return nil }
+        // oMLX's summary of a drafted reply (MTP or DFlash), logged before the reply's own line; a reply that
+        // stopped drafting partway ("parked") continued without it, so its summary covers only the start.
+        let draftPattern = #"finish=(\w+) tokens=(\d+) cycles=\d+ tok/cycle=([\d.]+).*?timing\[backbone=([\d.]+)ms mtp=([\d.]+)ms sample=([\d.]+)ms cache=([\d.]+)ms"#
+        guard let regex = try? NSRegularExpression(pattern: pattern), let phoneRegex = try? NSRegularExpression(pattern: phonePattern),
+              let draftRegex = try? NSRegularExpression(pattern: draftPattern) else { return nil }
         func groups(_ regex: NSRegularExpression, _ s: String) -> [String?]? {
             guard let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
             return (0..<m.numberOfRanges).map { i in Range(m.range(at: i), in: s).map { String(s[$0]) } }
@@ -992,19 +1009,26 @@ final class Offload: ObservableObject {
         for index in lines.indices.reversed() where lines[index].contains("omlx.server") && lines[index].contains(" tokens in ") {
             guard let g = groups(regex, lines[index]), let tokens = g[1].flatMap(Int.init), let seconds = g[2].flatMap(Double.init) else { continue }
             var prompt = g[3].flatMap(Int.init), firstToken = g[4].flatMap(Double.init)
-            // The Anthropic and Responses APIs log no prompt size or first-token time; the iPhone's line gives both
-            // for a prompt it read (the Mac's own part after it is short next to the phone's).
-            if firstToken == nil {
-                for earlier in lines[..<index].reversed() {
-                    if earlier.contains("omlx.server") && earlier.contains(" tokens in ") { break }
-                    if earlier.contains("phone prefill:"), let p = groups(phoneRegex, earlier) {
-                        prompt = prompt ?? p[1].flatMap(Int.init)
-                        firstToken = p[2].flatMap(Double.init)
-                        break
-                    }
+            var drafted: (tokens: Int, seconds: Double)?, perStep: Double?
+            // The Anthropic and Responses APIs log no prompt size or first-token time; the iPhone's line gives the
+            // prompt size for a prompt it read, and the drafting summary times the writing itself.
+            for earlier in lines[..<index].reversed() {
+                if earlier.contains("omlx.server") && earlier.contains(" tokens in ") { break }
+                if drafted == nil, earlier.contains("finish="), let d = groups(draftRegex, earlier), d[1] != "parked",
+                   let count = d[2].flatMap(Int.init) {
+                    let ms = (4...7).compactMap { d[$0].flatMap(Double.init) }.reduce(0, +)
+                    drafted = (count, ms / 1000)
+                    perStep = d[3].flatMap(Double.init)
+                }
+                if firstToken == nil, earlier.contains("phone prefill:"), let p = groups(phoneRegex, earlier) {
+                    prompt = prompt ?? p[1].flatMap(Int.init)
+                    firstToken = p[2].flatMap(Double.init)
                 }
             }
-            return .init(tokens: tokens, seconds: seconds, prompt: prompt, firstToken: firstToken)
+            var request = EngineStats.Request(tokens: tokens, seconds: seconds, prompt: prompt, firstToken: firstToken)
+            request.drafted = drafted
+            request.perStep = perStep
+            return request
         }
         return nil
     }

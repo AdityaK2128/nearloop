@@ -144,6 +144,73 @@ class _KapitsaModels:
         await self.app(scope, receive, capture)
 
 
+def _argument(name: str) -> str | None:
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == name and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def choose_drafter() -> None:
+    """Speculative decoding as Kapitsa does it: with the model's DFlash drafter (NEARLOOP_DFLASH_DRAFT, the
+    folder Nearloop pairs with the model, quantized to 4 bits as Kapitsa runs it) instead of an MTP head,
+    which drafts fewer tokens per step. Without a drafter the model keeps oMLX's own choice. Written to
+    oMLX's per-model settings before it starts; a model new to them first gets oMLX's recommended sampling
+    values, as oMLX itself would give it."""
+    model_id, base, model_dir = os.environ.get("NEARLOOP_MODEL_ID"), _argument("--base-path"), _argument("--model-dir")
+    draft = os.environ.get("NEARLOOP_DFLASH_DRAFT") or None
+    if not (model_id and base and model_dir):
+        return
+    path, model_path = os.path.join(base, "model_settings.json"), os.path.join(model_dir, model_id)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("models", {}), dict):
+        data = {}
+    data.setdefault("version", 1)
+    models = data.setdefault("models", {})
+    entry = models.get(model_id)
+    if not isinstance(entry, dict):
+        if not draft:
+            return  # oMLX gives a new model its own defaults, an MTP head included
+        entry = {}
+        try:
+            from omlx.utils.generation_config import load_sampling_defaults
+
+            with open(os.path.join(model_path, "config.json")) as f:
+                model_type = json.load(f).get("model_type")
+            entry.update(load_sampling_defaults(model_path, model_type))
+        except Exception as exc:  # noqa: BLE001 - sampling then follows each request
+            print(f"Nearloop: no sampling defaults for {model_id}: {exc}", file=sys.stderr)
+    if draft:
+        entry.update(dflash_enabled=True, mtp_enabled=False, dflash_draft_model=draft,
+                     dflash_draft_quant_enabled=True, dflash_draft_quant_weight_bits=4,
+                     dflash_draft_quant_group_size=64)
+    elif entry.get("dflash_enabled"):
+        # The drafter is gone (or unpaired): back to the model's MTP head when it has one.
+        entry["dflash_enabled"] = False
+        try:
+            from omlx.utils.model_loading import _is_mtp_compatible
+
+            with open(os.path.join(model_path, "config.json")) as f:
+                config = json.load(f)
+            entry["mtp_enabled"] = bool(_is_mtp_compatible(config, config.get("model_type")))
+        except Exception:  # noqa: BLE001 - leave MTP as it was
+            pass
+    else:
+        return
+    models[model_id] = entry
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def main() -> None:
     sys.meta_path.insert(0, _Finder())
     # Report whether the hook went in, once oMLX has imported its scheduler.
@@ -154,6 +221,10 @@ def main() -> None:
     from omlx.load_fixes import install as _install_load_fixes
 
     _install_load_fixes()
+    try:
+        choose_drafter()
+    except Exception as exc:  # noqa: BLE001 - the model still loads, drafting as oMLX chooses
+        print(f"Nearloop: couldn't set the DFlash drafter: {exc}", file=sys.stderr)
 
     # uvicorn loads "omlx.server:app" by name, so this module object is the one it serves.
     try:

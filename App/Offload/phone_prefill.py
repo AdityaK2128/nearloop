@@ -12,11 +12,14 @@ the Mac computes chunk i+1 while the phone works on chunk i. Linear-attention
 (Gated DeltaNet) state comes back when a chunk ends on a cache-block boundary,
 so boundary snapshots for the paged SSD cache keep working, and once more at
 the end. With an MTP head the phone also returns its final hidden states, which
-are folded into the head exactly as the inner-model capture wrap does. After
-prefill the Mac holds the complete cache; decode never touches the phone.
+are folded into the head exactly as the inner-model capture wrap does. With a
+DFlash drafter the phone stops where the drafter's window starts (the prompt's
+last ~2K tokens): the Mac computes those in full, so the drafter gets the layer
+captures it reads. After prefill the Mac holds the complete cache; decode never
+touches the phone.
 
 Anything unusual falls back to the ordinary path with the caches rolled back:
-no phone, a refusal, a timeout, media prompts, a DFlash drafter, TurboQuant KV.
+no phone, a refusal, a timeout, media prompts, TurboQuant KV.
 
 Configuration (environment):
     OMLX_PHONE_WORKER       host:port, [fe80::…%anri0]:9100, or "auto" to use an
@@ -538,6 +541,17 @@ def _run(
         control.skip(reason)
         logger.info("phone prefill skipped for %s: %s", request.request_id, reason)
         return 0
+    # A block drafter (DFlash) reads the target's layers for the prompt's last tokens, which the Mac
+    # computes in full: the phone takes the prompt up to there, on a cache-block boundary.
+    window_start = _drafter_window_start(sched, request)
+    if window_start is not None:
+        end = window_start
+        if boundary_enabled and block_size > 0:
+            end -= end % block_size
+        limit = end - base_size
+        if limit < config["min_tokens"]:
+            return 0  # the new part of the prompt is mostly the drafter's window
+        prefill_tokens = prefill_tokens[:limit]
     view = getattr(sched, "_phone_view", None)
     if view is None or view.inner is not getattr(getattr(sched.model, "_language_model", sched.model), "model", None):
         view = sched._phone_view = _ModelView(sched.model)
@@ -588,6 +602,19 @@ def _run(
         raise
 
 
+def _drafter_window_start(sched: Any, request: Any) -> Optional[int]:
+    """Where the attached block drafter's context window starts in the prompt, or None without one."""
+    try:
+        from .patches.mlx_lm_mtp.batch_generator import _drafter_for
+    except ImportError:
+        return None
+    drafter = _drafter_for(sched.model)
+    prompt = getattr(request, "prompt_token_ids", None)
+    if drafter is None or prompt is None:
+        return None
+    return max(0, len(prompt) - int(drafter.window))
+
+
 def _ineligible(sched: Any, request: Any, prompt_cache: list) -> Optional[str]:
     if getattr(sched, "_turboquant_kv_bits", None) is not None:
         return "TurboQuant KV"
@@ -595,13 +622,6 @@ def _ineligible(sched: Any, request: Any, prompt_cache: list) -> Optional[str]:
         return "media in the conversation"
     if float(getattr(request, "rope_deltas", 0.0) or 0.0) != 0.0:
         return "shifted mRoPE positions"
-    try:
-        from .patches.mlx_lm_mtp.batch_generator import _drafter_for
-
-        if _drafter_for(sched.model) is not None:
-            return "a block drafter is attached"
-    except ImportError:
-        pass
     for c in prompt_cache:
         name = type(c).__name__
         if name not in ("KVCache", "ArraysCache"):

@@ -171,7 +171,8 @@ private struct OffloadLiveStats: View {
                 Spacer()
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 14) {
-                Tile("Last Response", stats.last?.writing.map { String(format: "%.1f", $0) }, "tok/s writing")
+                Tile("Last Response", stats.last?.writing.map { String(format: "%.1f", $0) },
+                     stats.last?.perStep.map { String(format: "tok/s writing · %.1f per draft step", $0) } ?? "tok/s writing")
                 Tile("Prompt Reading", reading.map { String(format: "%.0f", $0) }, readingDetail)
                 Tile("iPhone Layers", saved.tailLayers > 0 ? "\(saved.tailLayers) of \(saved.numLayers)" : nil, phoneTime ?? "run on the iPhone")
                 Tile("Prompts with iPhone", status.completed.formatted(),
