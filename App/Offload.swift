@@ -109,10 +109,12 @@ final class Offload: ObservableObject {
             let seconds: Double
             let prompt: Int?
             let firstToken: Double?
-            /// Tokens per second after the first one; the whole time when the log gives no first-token time.
+            /// Tokens per second after the first one. Without a first-token time only a reply to a short prompt
+            /// is timed as a whole: a long prompt's reading would count as writing.
             var writing: Double? {
                 if let first = firstToken, tokens > 1, seconds - first > 0.05 { return Double(tokens - 1) / (seconds - first) }
-                return tokens > 0 && seconds > 0 ? Double(tokens) / seconds : nil
+                guard firstToken == nil, let prompt, prompt < 1_000, tokens > 0, seconds > 0 else { return nil }
+                return Double(tokens) / seconds
             }
             var reading: Double? {
                 guard let prompt, let first = firstToken, first > 0, prompt > 0 else { return nil }
@@ -979,13 +981,30 @@ final class Offload: ObservableObject {
         try? handle.seek(toOffset: size > 65_536 ? size - 65_536 : 0)
         guard let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else { return nil }
         let pattern = #"(\d+) tokens in ([\d.]+)s \([\d.]+ tok/s\)(?:, prompt: (\d+))?(?:.*?stream_model_ttft=([\d.]+)s)?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        for line in text.split(separator: "\n").reversed() where line.contains("omlx.server") && line.contains(" tokens in ") {
-            let s = String(line)
-            guard let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { continue }
-            func group(_ i: Int) -> String? { Range(m.range(at: i), in: s).map { String(s[$0]) } }
-            guard let tokens = group(1).flatMap(Int.init), let seconds = group(2).flatMap(Double.init) else { continue }
-            return .init(tokens: tokens, seconds: seconds, prompt: group(3).flatMap(Int.init), firstToken: group(4).flatMap(Double.init))
+        // The iPhone's part of a prompt, logged before the reply: "phone prefill: 5641 tokens in 39.20 s (144 tok/s)".
+        let phonePattern = #"phone prefill: (\d+) tokens in ([\d.]+) s"#
+        guard let regex = try? NSRegularExpression(pattern: pattern), let phoneRegex = try? NSRegularExpression(pattern: phonePattern) else { return nil }
+        func groups(_ regex: NSRegularExpression, _ s: String) -> [String?]? {
+            guard let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
+            return (0..<m.numberOfRanges).map { i in Range(m.range(at: i), in: s).map { String(s[$0]) } }
+        }
+        let lines = text.split(separator: "\n").map(String.init)
+        for index in lines.indices.reversed() where lines[index].contains("omlx.server") && lines[index].contains(" tokens in ") {
+            guard let g = groups(regex, lines[index]), let tokens = g[1].flatMap(Int.init), let seconds = g[2].flatMap(Double.init) else { continue }
+            var prompt = g[3].flatMap(Int.init), firstToken = g[4].flatMap(Double.init)
+            // The Anthropic and Responses APIs log no prompt size or first-token time; the iPhone's line gives both
+            // for a prompt it read (the Mac's own part after it is short next to the phone's).
+            if firstToken == nil {
+                for earlier in lines[..<index].reversed() {
+                    if earlier.contains("omlx.server") && earlier.contains(" tokens in ") { break }
+                    if earlier.contains("phone prefill:"), let p = groups(phoneRegex, earlier) {
+                        prompt = prompt ?? p[1].flatMap(Int.init)
+                        firstToken = p[2].flatMap(Double.init)
+                        break
+                    }
+                }
+            }
+            return .init(tokens: tokens, seconds: seconds, prompt: prompt, firstToken: firstToken)
         }
         return nil
     }

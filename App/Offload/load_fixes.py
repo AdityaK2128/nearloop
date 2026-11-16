@@ -14,7 +14,8 @@
    when it sees an unconverted checkpoint (conv1d weights in PyTorch layout). A checkpoint saved with
    MLX-layout conv weights and the original norms then loads without the 1 and writes garbage. The
    weights tell which it is: converted layer norms average near 1, original ones near 0. When a Qwen3.5-
-   family model's layer norms average under 0.4, the same norms mlx-lm's sanitize would shift get 1 added.
+   family model's layer norms average under 0.4, the same norms mlx-lm's sanitize would shift get 1 added,
+   including those of a multi-token-prediction head (`mtp.*`), whose drafts are otherwise all rejected.
 
 Every other key, and every other model, loads as before.
 """
@@ -27,7 +28,9 @@ _installed = False
 # qwen3_next sanitize), and the norm weights that sanitize shifts.
 _SHIFTED_NORM_TYPES = {"qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen3_next"}
 _NORM_SUFFIXES = (".input_layernorm.weight", ".post_attention_layernorm.weight", "model.norm.weight",
-                  ".q_norm.weight", ".k_norm.weight")
+                  ".q_norm.weight", ".k_norm.weight",
+                  # The multi-token-prediction head's own norms (oMLX's MTP sanitize shifts these too).
+                  ".pre_fc_norm_hidden.weight", ".pre_fc_norm_embedding.weight", "mtp.norm.weight")
 _LAYER_NORMS = (".input_layernorm.weight", ".post_attention_layernorm.weight")
 
 
