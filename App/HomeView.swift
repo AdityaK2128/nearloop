@@ -80,6 +80,9 @@ private struct ServerCard: View {
                 Divider()
                 LiveStats(server: server)
                 promptCacheNote
+            } else if server.phase == .external, Offload.shared.serving {
+                Divider()
+                OffloadLiveStats()
             }
         }.card(padding: 24)
     }
@@ -146,6 +149,73 @@ private struct ServerCard: View {
             }
         }.controlSize(.large)
     }
+}
+
+/// Home's live figures while iPhone Offload serves: oMLX's own counters and last request, and what the
+/// phone did for the last long prompt.
+private struct OffloadLiveStats: View {
+    @ObservedObject var offload = Offload.shared
+
+    var body: some View {
+        let stats = offload.engineStats, status = offload.status, saved = offload.saved
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 8) {
+                Circle().fill(busy ? Color.green : Color.secondary.opacity(0.5)).frame(width: 8, height: 8)
+                Text(liveTitle).font(.headline)
+                if status.activeTokens > 0 {
+                    ProgressView(value: Double(status.activeProcessed), total: Double(max(1, status.activeTokens)))
+                        .frame(width: 160).controlSize(.small)
+                    Text("\(status.activeProcessed.formatted()) of \(status.activeTokens.formatted()) tokens")
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 14) {
+                Tile("Last Response", stats.last?.writing.map { String(format: "%.1f", $0) }, "tok/s writing")
+                Tile("Prompt Reading", reading.map { String(format: "%.0f", $0) }, readingDetail)
+                Tile("iPhone Layers", saved.tailLayers > 0 ? "\(saved.tailLayers) of \(saved.numLayers)" : nil, phoneTime ?? "run on the iPhone")
+                Tile("Prompts with iPhone", status.completed.formatted(),
+                     status.fallbacks > 0 ? "\(status.fallbacks) fell back to the Mac" : "over \(shortTokens(offload.minTokens)) tokens")
+                Tile("Average Writing", stats.averageWriting.map { String(format: "%.1f", $0) }, "tok/s · \(stats.requests) requests")
+                Tile("Tokens Written", stats.written > 0 ? stats.written.formatted() : nil, "this session")
+                Tile("Mac Memory", stats.memoryUsed > 0 ? Offload.gigabytes(stats.memoryUsed) : nil,
+                     stats.memoryMax > 0 ? "of \(Offload.gigabytes(stats.memoryMax)) oMLX may use" : "model loaded by oMLX")
+                Tile("iPhone Memory", phoneFootprint.map(Offload.gigabytes), phoneBudget.map { "of \(Offload.gigabytes($0)) the app may use" } ?? "in use on the phone")
+            }
+            Text("Live figures come from oMLX and the iPhone’s Tail Worker. The Mac writes every reply; the iPhone helps read prompts over \(shortTokens(offload.minTokens)) tokens.")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    private var busy: Bool { offload.engineStats.active > 0 || offload.status.activeTokens > 0 }
+
+    private var liveTitle: String {
+        if offload.status.activeTokens > 0 { return "Reading Prompt with iPhone" }
+        return offload.engineStats.active > 0 ? "Working" : "Idle"
+    }
+
+    /// The last long prompt the phone helped with when it is the newest prompt figure, else the log's.
+    private var reading: Double? {
+        offload.engineStats.last?.reading ?? (offload.status.lastRun?["tokens_per_second"] as? Double) ?? offload.engineStats.averageReading
+    }
+
+    private var readingDetail: String {
+        if let run = offload.status.lastRun, let tokens = run["tokens"] as? Int, let speed = run["tokens_per_second"] as? Double {
+            return String(format: "tok/s · with iPhone: %.0f on %@", speed, shortTokens(tokens))
+        }
+        return "tok/s · whole prompt"
+    }
+
+    private var phoneTime: String? {
+        guard let run = offload.status.lastRun, let phone = run["phone_seconds"] as? Double, let mac = run["mac_seconds"] as? Double else { return nil }
+        return String(format: "last prompt: iPhone %.0f s, Mac %.0f s", phone, mac)
+    }
+
+    private var phoneFootprint: Int64? {
+        ((offload.status.lastRun?["device"] as? [String: Any])?["footprint"] as? NSNumber)?.int64Value
+    }
+
+    private var phoneBudget: Int64? { offload.phone.flatMap { offload.saved.budgets[$0.udid] } ?? offload.saved.budgets.values.first }
 }
 
 private struct GetStarted: View {

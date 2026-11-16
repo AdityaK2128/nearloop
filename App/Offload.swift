@@ -101,6 +101,34 @@ final class Offload: ObservableObject {
         }
     }
 
+    /// What oMLX reports while it serves, for Home's live panel: its running totals (/api/status) and the
+    /// last finished request (its log line: tokens, seconds, prompt tokens, time to first token).
+    struct EngineStats: Equatable {
+        struct Request: Equatable {
+            let tokens: Int
+            let seconds: Double
+            let prompt: Int?
+            let firstToken: Double?
+            /// Tokens per second after the first one; the whole time when the log gives no first-token time.
+            var writing: Double? {
+                if let first = firstToken, tokens > 1, seconds - first > 0.05 { return Double(tokens - 1) / (seconds - first) }
+                return tokens > 0 && seconds > 0 ? Double(tokens) / seconds : nil
+            }
+            var reading: Double? {
+                guard let prompt, let first = firstToken, first > 0, prompt > 0 else { return nil }
+                return Double(prompt) / first
+            }
+        }
+        var active = 0
+        var requests = 0
+        var written = 0
+        var averageWriting: Double?
+        var averageReading: Double?
+        var memoryUsed: Int64 = 0
+        var memoryMax: Int64 = 0
+        var last: Request?
+    }
+
     struct BenchRun: Identifiable {
         let id = UUID()
         let label: String
@@ -175,6 +203,7 @@ final class Offload: ObservableObject {
     @Published private(set) var activity: String?
     @Published private(set) var log: [String] = []
     @Published private(set) var status = Status()
+    @Published private(set) var engineStats = EngineStats()
     @Published private(set) var saved: Saved
 
     @Published private(set) var benchmarking: String?
@@ -194,7 +223,7 @@ final class Offload: ObservableObject {
     private static var savedURL: URL { folder.appendingPathComponent("state.json") }
     private static var configURL: URL { folder.appendingPathComponent("phone-config.json") }
     private static var statusURL: URL { folder.appendingPathComponent("phone-status.json") }
-    static var logURL: URL { folder.appendingPathComponent("engine.log") }
+    nonisolated static var logURL: URL { AppPaths.folder("offload").appendingPathComponent("engine.log") }
     private static var shardURL: URL { folder.appendingPathComponent(shardName) }
 
     /// The Python side, bundled in Contents/Resources/offload.
@@ -471,9 +500,9 @@ final class Offload: ObservableObject {
         let k = key(inspection), most = fit(for: model)
         if let share = saved.balance[k] {
             return String(format: "Balanced from measured speeds: the iPhone takes %.0f%% of the layers", share * 100)
-                + (most.map { ", up to the \($0) it can hold" } ?? "")
+                + (most.map { ", up to the \($0) it can hold with \(Int(Self.phoneFreeShare * 100))% of its memory free" } ?? "")
         }
-        if let most { return "As many as the iPhone can hold (\(most)), at most half; refined after the first long prompt" }
+        if let most { return "As many as the iPhone can hold (\(most)) with \(Int(Self.phoneFreeShare * 100))% of its memory free, at most half until a long prompt measures both sides" }
         return "Measured on the iPhone when you start"
     }
 
@@ -636,12 +665,20 @@ final class Offload: ObservableObject {
         persist()
     }
 
-    /// Most of this model's last layers whose weights and 32K-token prompt fit the phone's budget,
-    /// by the Tail Worker's own rules (worked out per layer by offload/tool.py).
+    /// Share of the phone's budget left free: iOS ends an app at its limit. It covers the Tail Worker's own
+    /// 600 MB reserve, which it keeps free before taking a prompt.
+    static let phoneFreeShare = 0.12
+    static let phoneReserve: Int64 = 600 * 1024 * 1024
+    /// The prompt both sides are sized for: an agent's first request and a few steps of work.
+    static let promptTokens = 32_768
+
+    /// Most of this model's last layers whose weights, working memory and a 32K-token prompt fit the phone's
+    /// budget with `phoneFreeShare` of it left free, by the Tail Worker's own costs (worked out per layer by
+    /// offload/tool.py; its fixed part includes the reserve, counted here as part of the free share).
     static func fit(_ inspection: Inspection, budget: Int64) -> Int? {
         guard !inspection.phoneLayerCost.isEmpty else { return nil }
-        // 8% stays free: iOS ends an app at its limit, and the phone's own check averages layers.
-        var room = budget * 92 / 100 - inspection.phoneFixedCost, count = 0
+        let keep = max(Int64(Double(budget) * phoneFreeShare), phoneReserve)
+        var room = budget - keep - max(0, inspection.phoneFixedCost - phoneReserve), count = 0
         for cost in inspection.phoneLayerCost.reversed().dropLast() {
             room -= cost
             if room < 0 { break }
@@ -745,6 +782,7 @@ final class Offload: ObservableObject {
         writeConfig()
         try? fm.removeItem(at: Self.statusURL)
         status = Status()
+        engineStats = EngineStats()
 
         // The prompt cache on disk: what Settings › Server allows, at most a quarter of free space.
         let free = (try? folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage ?? 0
@@ -766,9 +804,12 @@ final class Offload: ObservableObject {
         // The same memory rule as a Kapitsa load (Settings › Memory): what is free now, less the margin
         // kept for other apps. oMLX's own default tier can sit below a model that fits.
         if Prefs.protectMemory {
-            let budget = SystemMemory.safeBudgetGB(), need = SystemMemory.estimatedNeedGB(model)
+            // oMLX stops a request that outgrows the memory free while it runs, so count one long prompt too:
+            // reading it takes working memory on the Mac as well as the phone.
+            let budget = SystemMemory.safeBudgetGB()
+            let need = SystemMemory.estimatedNeedGB(model, tokens: Self.promptTokens) ?? SystemMemory.estimatedNeedGB(model) + 1.5
             if need > budget {
-                throw Kapitsa.Failure(errorDescription: String(format: "Not enough free memory: %@ needs about %.0f GB and %.0f GB is free now, keeping %.0f GB for other apps. Close some apps, or turn off Memory Protection in Settings › Memory.", model.name, need, budget, Prefs.memoryMargin))
+                throw Kapitsa.Failure(errorDescription: String(format: "Not enough free memory: %@ needs about %.0f GB with a %@-token prompt, and %.0f GB is free now, keeping %.0f GB for other apps. Close some apps, or turn off Memory Protection in Settings › Memory.", model.name, need, shortTokens(Self.promptTokens), budget, Prefs.memoryMargin))
             }
             arguments += ["--memory-guard-gb", String(format: "%.1f", budget)]
         }
@@ -842,6 +883,7 @@ final class Offload: ObservableObject {
         stopEngine()
         state = .stopped
         activity = nil
+        engineStats = EngineStats()
         note("Stopped")
     }
 
@@ -892,8 +934,11 @@ final class Offload: ObservableObject {
     private func startPolling() {
         poller?.cancel()
         poller = Task { [weak self] in
+            var tick = 0
             while !Task.isCancelled {
                 self?.readStatus()
+                if tick % 2 == 0 { await self?.readEngineStats() }
+                tick += 1
                 if let pid = self?.saved.pid, pid != 0, self?.process == nil, kill(pid, 0) != 0 {
                     self?.engineEnded(pid, code: -1)
                 }
@@ -903,6 +948,47 @@ final class Offload: ObservableObject {
     }
 
     private var lastCompleted = 0
+
+    private func readEngineStats() async {
+        let port = saved.port
+        guard port != 0, running, let url = URL(string: "http://127.0.0.1:\(port)/api/status") else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        if !Prefs.apiKey.isEmpty { request.setValue("Bearer \(Prefs.apiKey)", forHTTPHeaderField: "Authorization") }
+        var next = engineStats
+        if let (data, _) = try? await URLSession.shared.data(for: request),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            next.active = (object["active_requests"] as? Int ?? 0) + (object["waiting_requests"] as? Int ?? 0)
+            next.requests = object["total_requests"] as? Int ?? 0
+            next.written = object["total_completion_tokens"] as? Int ?? 0
+            next.averageWriting = (object["avg_generation_tps"] as? Double).flatMap { $0 > 0 ? $0 : nil }
+            next.averageReading = (object["avg_prefill_tps"] as? Double).flatMap { $0 > 0 ? $0 : nil }
+            next.memoryUsed = (object["model_memory_used"] as? NSNumber)?.int64Value ?? 0
+            next.memoryMax = (object["model_memory_max"] as? NSNumber)?.int64Value ?? 0
+        }
+        next.last = await Task.detached { Self.lastRequest() }.value ?? next.last
+        if next != engineStats { engineStats = next }
+    }
+
+    /// The last finished request in the engine log, e.g. "Chat completion: model=…, 200 tokens in 27.64s
+    /// (7.2 tok/s), prompt: 25, …, stream_model_ttft=2.00s". Reads only the end of the file.
+    nonisolated static func lastRequest() -> EngineStats.Request? {
+        guard let handle = try? FileHandle(forReadingFrom: logURL) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > 65_536 ? size - 65_536 : 0)
+        guard let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else { return nil }
+        let pattern = #"(\d+) tokens in ([\d.]+)s \([\d.]+ tok/s\)(?:, prompt: (\d+))?(?:.*?stream_model_ttft=([\d.]+)s)?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        for line in text.split(separator: "\n").reversed() where line.contains("omlx.server") && line.contains(" tokens in ") {
+            let s = String(line)
+            guard let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { continue }
+            func group(_ i: Int) -> String? { Range(m.range(at: i), in: s).map { String(s[$0]) } }
+            guard let tokens = group(1).flatMap(Int.init), let seconds = group(2).flatMap(Double.init) else { continue }
+            return .init(tokens: tokens, seconds: seconds, prompt: group(3).flatMap(Int.init), firstToken: group(4).flatMap(Double.init))
+        }
+        return nil
+    }
 
     private func readStatus() {
         guard let data = try? Data(contentsOf: Self.statusURL),

@@ -206,9 +206,9 @@ def cmd_link(args) -> None:
 def _load(path: str):
     from mlx_lm import load
 
-    import visual_keys
+    import load_fixes
 
-    visual_keys.install()
+    load_fixes.install()
 
     model, _ = load(path, lazy=True)
     return model
