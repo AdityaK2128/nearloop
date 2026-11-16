@@ -57,7 +57,7 @@ struct LocalModel: Identifiable, Hashable {
     }
 }
 
-/// Classifies model folders and GGUF files the way Kapitsa 0.2.26 accepts them, without loading weights.
+/// Classifies model folders and GGUF files the way Kapitsa 0.2.36 accepts them (the same types as 0.2.26), without loading weights.
 enum ModelScanner {
     static let qwenTypes: Set<String> = ["qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen4_exp", "qwen4_exp_text"]
     static let otherTypes: Set<String> = ["nemotron_h", "flint", "dory"]
