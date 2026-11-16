@@ -206,6 +206,10 @@ def cmd_link(args) -> None:
 def _load(path: str):
     from mlx_lm import load
 
+    import visual_keys
+
+    visual_keys.install()
+
     model, _ = load(path, lazy=True)
     return model
 
@@ -239,6 +243,16 @@ def problems(model) -> list[str]:
     return found
 
 
+def _short(exc: Exception) -> str:
+    """A loader error in one line: a list of hundreds of weight names keeps its first few."""
+    text = " ".join(str(exc).split())
+    head, sep, names = text.partition(": ")
+    if sep and names.count(",") > 3:
+        listed = [n.strip() for n in names.split(",")]
+        text = f"{head}: {', '.join(listed[:3])} and {len(listed) - 3} more"
+    return text[:400]
+
+
 def cmd_inspect(args) -> None:
     import splitmodel
     from mlx.utils import tree_flatten
@@ -246,7 +260,7 @@ def cmd_inspect(args) -> None:
     try:
         model = _load(args.model)
     except Exception as exc:  # noqa: BLE001 - any loader failure means "can't use"
-        emit({"ok": False, "supported": False, "reasons": [f"mlx-lm can't load this model: {exc}"]})
+        emit({"ok": False, "supported": False, "reasons": [f"mlx-lm can't load this model: {_short(exc)}"]})
         return
     reasons = problems(model)
     layers = model.layers

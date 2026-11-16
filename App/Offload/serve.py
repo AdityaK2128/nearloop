@@ -22,6 +22,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXTRA = {
+    "omlx.visual_keys": os.path.join(HERE, "visual_keys.py"),
     "omlx.phone_prefill": os.path.join(HERE, "phone_prefill.py"),
     "omlx.phone_control": os.path.join(HERE, "phone_control.py"),
 }
@@ -148,6 +149,11 @@ def main() -> None:
     # Report whether the hook went in, once oMLX has imported its scheduler.
     import omlx.scheduler  # noqa: F401  (imported here so the patch result is known)
     from omlx.phone_control import control
+
+    # Models that keep their vision encoder as `visual.*` load in oMLX too (see visual_keys.py).
+    from omlx.visual_keys import install as _install_visual_keys
+
+    _install_visual_keys()
 
     # uvicorn loads "omlx.server:app" by name, so this module object is the one it serves.
     try:

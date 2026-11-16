@@ -134,6 +134,9 @@ def main():
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
+    import visual_keys
+
+    visual_keys.install()
     model, _ = load(args.model, lazy=True)
     splitmodel.check_supported(model)
     tail_start = len(model.layers) - args.tail_layers
