@@ -125,8 +125,13 @@ private struct HuggingFaceSection: View {
     @State private var searching = false
     @State private var error = ""
     @State private var onlyCompatible = true
+    @State private var sort = HuggingFace.Sort.downloads
 
-    var shown: [HuggingFace.Model] { results.filter { !onlyCompatible || $0.likelyCompatible } }
+    var shown: [HuggingFace.Model] {
+        let rows = results.filter { !onlyCompatible || $0.likelyCompatible }
+        guard sort == .size else { return rows }
+        return rows.sorted { ($0.estimatedBytes ?? -1) > ($1.estimatedBytes ?? -1) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -139,8 +144,11 @@ private struct HuggingFaceSection: View {
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
                 Button("Search", action: search).controlSize(.large).keyboardShortcut(.defaultAction)
             }
-            HStack {
+            HStack(spacing: 16) {
                 Toggle("Kapitsa-compatible only", isOn: $onlyCompatible).toggleStyle(.checkbox)
+                Picker("Sort by", selection: $sort) {
+                    ForEach(HuggingFace.Sort.allCases) { Text($0.title).tag($0) }
+                }.fixedSize().onChange(of: sort) { _, _ in search() }
                 Spacer()
                 if !results.isEmpty { Text("\(shown.count) of \(results.count) results").font(.caption).foregroundStyle(.secondary) }
             }
@@ -161,7 +169,7 @@ private struct HuggingFaceSection: View {
         Task {
             // A pasted model address or org/name searches for that repository.
             let text = HuggingFace.repositoryID(query) ?? query
-            do { results = try await HuggingFace.search(text) } catch { self.error = error.localizedDescription }
+            do { results = try await HuggingFace.search(text, sort: sort) } catch { self.error = error.localizedDescription }
             searching = false
         }
     }
@@ -174,6 +182,8 @@ private struct HuggingFaceRow: View {
     @State private var details: HuggingFace.Details?
     @State private var checking = false
     @State private var withDrafter = true
+    /// The files' sizes added up, read when the row appears; until then the listing's estimate shows, marked ~.
+    @State private var exactBytes: Int64?
 
     var folder: URL { Kapitsa.downloads.appendingPathComponent(model.id.replacingOccurrences(of: "/", with: "--")) }
     var owner: String { String(model.id.split(separator: "/").first ?? "") }
@@ -190,6 +200,15 @@ private struct HuggingFaceRow: View {
             if let drafter = details?.drafter ?? downloads.attachedDrafter(of: model.id),
                let job = downloads.jobs[drafter], job.showsProgress { DownloadProgressLine(job: job) }
         }.card(padding: 16)
+        .task(id: model.id) { exactBytes = await HuggingFace.size(model.id) }
+    }
+
+    /// Verified size first, then the files' sizes, then the listing's estimate.
+    private var sizeText: (text: String, gigabytes: Double)? {
+        if let details, details.bytes > 0 { return (String(format: "%.1f GB", Double(details.bytes) / 1e9), Double(details.bytes) / 1e9) }
+        if let exactBytes { return (String(format: "%.1f GB", Double(exactBytes) / 1e9), Double(exactBytes) / 1e9) }
+        if let estimate = model.estimatedBytes { return (String(format: "~%.1f GB", Double(estimate) / 1e9), Double(estimate) / 1e9) }
+        return nil
     }
 
     /// Bytes this download needs: the model, plus its drafter when that is included.
@@ -248,14 +267,35 @@ private struct HuggingFaceRow: View {
                 }
                 HStack(spacing: 14) {
                     if let type = model.modelType { Text(type).font(.caption.monospaced()).foregroundStyle(model.likelyCompatible ? .green : .secondary) }
+                    if let bits = model.bits {
+                        Text(model.groupSize.map { "\(bits)-bit g\($0)" } ?? "\(bits)-bit").foregroundStyle(.secondary)
+                            .help("Quantization from the repository's config.json")
+                    }
+                    if let size = sizeText {
+                        Text(size.text).monospacedDigit().foregroundStyle(.secondary)
+                            .help(size.text.hasPrefix("~") ? "Estimated from the Hub's parameter counts and the bits per weight; the files' sizes replace it in a moment." : "The files of the current revision, added up.")
+                        FitBadge(gigabytes: size.gigabytes)
+                    }
                     Label((model.downloads ?? 0).formatted(.number.notation(.compactName)), systemImage: "arrow.down").foregroundStyle(.secondary)
                     Label("\(model.likes ?? 0)", systemImage: "heart").foregroundStyle(.secondary)
-                    if let card = URL(string: "https://huggingface.co/\(model.id)") { Link("Model card ↗", destination: card) }
-                    if let details, details.bytes > 0 {
-                        Text(String(format: "%.1f GB", Double(details.bytes) / 1e9)).monospacedDigit().foregroundStyle(.secondary)
-                        FitBadge(gigabytes: Double(details.bytes) / 1e9)
+                    if let updated = model.updated {
+                        Text(updated.formatted(date: .abbreviated, time: .omitted)).foregroundStyle(.secondary).help("Last updated on the Hub")
                     }
+                    if let card = URL(string: "https://huggingface.co/\(model.id)") { Link("Model card ↗", destination: card) }
                 }.font(.caption).labelStyle(.titleAndIcon)
+                if model.handlesTools || model.handlesThinking || model.baseModel != nil {
+                    HStack(spacing: 14) {
+                        if model.handlesTools {
+                            Label("Tools", systemImage: "wrench.and.screwdriver").help("The chat template renders tool definitions and tool calls.")
+                        }
+                        if model.handlesThinking {
+                            Label("Thinking", systemImage: "lightbulb").help("The chat template has a thinking switch or a thinking block.")
+                        }
+                        if let base = model.baseModel {
+                            Text("from \(base)").foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle).help("The model this one was quantized or tuned from, as the repository declares it.")
+                        }
+                    }.font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+                }
                 if let problem = details?.problem ?? spaceProblem { Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
                 speedups
             }

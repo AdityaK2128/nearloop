@@ -154,10 +154,96 @@ enum HuggingFace {
         let downloads: Int?
         let likes: Int?
         let tags: [String]?
+        let lastModified: String?
+        let trendingScore: Double?
+        let config: Config?
+        let safetensors: Safetensors?
+        let baseModels: BaseModels?
 
-        var modelType: String? { tags?.first { ModelScanner.qwenTypes.contains($0) || ModelScanner.otherTypes.contains($0) } }
+        /// What the listing carries of config.json: the type, the quantization and the chat template. Not the
+        /// whole file, so vision and context settings are read on Verify. Every field is optional and tolerant:
+        /// an odd value in one repository must not lose the whole page.
+        struct Config: Decodable, Hashable {
+            var modelType: String?
+            var quantization: Quantization?
+            var chatTemplate: String?
+            enum CodingKeys: String, CodingKey { case modelType = "model_type", quantizationConfig = "quantization_config", quantization, chatTemplateJinja = "chat_template_jinja" }
+            init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                modelType = try? values.decodeIfPresent(String.self, forKey: .modelType)
+                quantization = (try? values.decodeIfPresent(Quantization.self, forKey: .quantizationConfig))
+                    ?? (try? values.decodeIfPresent(Quantization.self, forKey: .quantization))
+                chatTemplate = try? values.decodeIfPresent(String.self, forKey: .chatTemplateJinja)
+            }
+        }
+        struct Quantization: Decodable, Hashable {
+            let bits: Int?
+            let groupSize: Int?
+            enum CodingKeys: String, CodingKey { case bits, groupSize = "group_size" }
+        }
+        /// Parameter counts by stored type, as the Hub reads them from the safetensors headers. Packed quantized
+        /// weights (U32 in MLX) are counted as parameters, not as the 32-bit words that hold them.
+        struct Safetensors: Decodable, Hashable {
+            let parameters: [String: Int64]?
+            let total: Int64?
+        }
+        struct BaseModels: Decodable, Hashable {
+            let relation: String?
+            let models: [Base]?
+            struct Base: Decodable, Hashable { let id: String }
+        }
+
+        var modelType: String? { config?.modelType ?? tags?.first { ModelScanner.qwenTypes.contains($0) || ModelScanner.otherTypes.contains($0) } }
         /// Kapitsa downloads Qwen3.5-family MLX repositories by name.
         var likelyCompatible: Bool { modelType.map(ModelScanner.qwenTypes.contains) ?? false }
+        /// Bits per weight of the quantized layers, from the config; else from a "4-bit"-style tag.
+        var bits: Int? {
+            config?.quantization?.bits ?? tags?.lazy.compactMap { $0.hasSuffix("-bit") ? Int($0.dropLast(4)) : nil }.first
+        }
+        var groupSize: Int? { config?.quantization?.groupSize }
+        /// The weights' size from the Hub's parameter counts: quantized weights take `bits` per parameter, the rest
+        /// their own width. Within a few percent of the files; `size(_:)` reads the exact figure. Nil when the
+        /// counts or the bits are unknown, rather than a guess.
+        var estimatedBytes: Int64? {
+            guard let parameters = safetensors?.parameters, !parameters.isEmpty else { return nil }
+            var bytes = 0.0
+            for (type, count) in parameters {
+                switch type {
+                case "U32", "I32":
+                    guard let bits else { return nil }
+                    bytes += Double(count) * Double(bits) / 8
+                case "BF16", "F16", "I16", "U16": bytes += Double(count) * 2
+                case "F64", "I64", "U64": bytes += Double(count) * 8
+                case "U8", "I8", "BOOL", "F8_E4M3", "F8_E5M2": bytes += Double(count)
+                default: bytes += Double(count) * 4
+                }
+            }
+            return Int64(bytes)
+        }
+        /// The chat template renders tool definitions and tool calls.
+        var handlesTools: Bool { config?.chatTemplate?.contains("tool_call") ?? false }
+        /// The chat template has a thinking switch (Qwen's enable_thinking) or a thinking block.
+        var handlesThinking: Bool { config?.chatTemplate.map { $0.contains("enable_thinking") || $0.contains("<think>") } ?? false }
+        var baseModel: String? { baseModels?.models?.first?.id }
+        var updated: Date? { lastModified.flatMap { Model.dates.date(from: $0) ?? Model.plainDates.date(from: $0) } }
+        private static let dates: ISO8601DateFormatter = { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f }()
+        private static let plainDates = ISO8601DateFormatter()
+    }
+
+    /// The Hub's own orderings, plus size, which is sorted here from the listing's parameter counts.
+    enum Sort: String, CaseIterable, Identifiable {
+        case downloads, trending = "trendingScore", likes, updated = "lastModified", size
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .downloads: return "Downloads"
+            case .trending: return "Trending"
+            case .likes: return "Likes"
+            case .updated: return "Recently Updated"
+            case .size: return "Size"
+            }
+        }
+        var hubField: String { self == .size ? Sort.downloads.rawValue : rawValue }
     }
 
     struct Details {
@@ -170,14 +256,30 @@ enum HuggingFace {
         var drafterBytes: Int64 = 0
     }
 
-    static func search(_ query: String) async throws -> [Model] {
+    /// One request lists the models with their config, parameter counts, dates and base models (the `expand`
+    /// fields), so each row can show its size, bits and template features without a request of its own.
+    static func search(_ query: String, sort: Sort = .downloads) async throws -> [Model] {
         var components = URLComponents(string: "https://huggingface.co/api/models")!
         components.queryItems = [URLQueryItem(name: "search", value: query), URLQueryItem(name: "filter", value: "mlx"),
-                                 URLQueryItem(name: "sort", value: "downloads"), URLQueryItem(name: "direction", value: "-1"),
+                                 URLQueryItem(name: "sort", value: sort.hubField), URLQueryItem(name: "direction", value: "-1"),
                                  URLQueryItem(name: "limit", value: "50")]
+            + ["config", "safetensors", "lastModified", "downloads", "likes", "tags", "trendingScore", "baseModels"]
+                .map { URLQueryItem(name: "expand[]", value: $0) }
         let (data, response) = try await URLSession.shared.data(from: components.url!)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw Kapitsa.Failure(errorDescription: "Unable to reach Hugging Face. Check your internet connection.") }
         return try JSONDecoder().decode([Model].self, from: data)
+    }
+
+    /// The files of the repository's current revision, added up: what a download writes. (The Hub's `usedStorage`
+    /// counts every revision ever pushed, often twice that.) Read once per repository.
+    @MainActor static var sizes: [String: Int64] = [:]
+    static func size(_ id: String) async -> Int64? {
+        if let known = await MainActor.run(body: { sizes[id] }) { return known }
+        guard let info = try? await json("https://huggingface.co/api/models/\(id)?blobs=true") else { return nil }
+        let bytes = ((info["siblings"] as? [[String: Any]]) ?? []).reduce(Int64(0)) { $0 + Int64(($1["size"] as? Int) ?? 0) }
+        guard bytes > 0 else { return nil }
+        await MainActor.run { sizes[id] = bytes }
+        return bytes
     }
 
     /// Download size and whether the repository's config is one Kapitsa runs.
