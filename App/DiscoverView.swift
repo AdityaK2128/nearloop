@@ -231,21 +231,30 @@ private struct HuggingFaceRow: View {
                       Double(need) / 1e9, Double(free) / 1e9)
     }
 
+    /// The two ways Kapitsa drafts tokens ahead, as pills: the model's own MTP heads (in the upload or not) and a
+    /// DFlash2 drafter from the catalog, a separate small network that fits any model of this shape. With both
+    /// present Kapitsa runs the drafter, which accepts more tokens per step.
     @ViewBuilder private var speedups: some View {
         if let details, details.problem == nil {
-            HStack(spacing: 12) {
-                Label(details.hasMTP ? "MTP heads included" : "No MTP heads",
-                      systemImage: details.hasMTP ? "bolt.fill" : "bolt.slash")
-                    .foregroundStyle(details.hasMTP ? .green : .secondary)
-                    .help(details.hasMTP ? "Kapitsa drafts several tokens per step with the model’s own MTP heads." : "This upload has no multi-token-prediction heads.")
+            HStack(spacing: 10) {
+                Text("Speculative decoding").foregroundStyle(.secondary)
                 if let drafter = details.drafter {
+                    Badge(text: "DFlash2", color: .purple, symbol: "bolt")
+                        .help("\(drafter): a drafter built for a model of exactly this shape, from Kapitsa’s catalog; placed in the model’s folder as dflash2/.")
                     Toggle(isOn: $withDrafter) {
-                        Text(String(format: "Add DFlash2 drafter (%.1f GB)", Double(details.drafterBytes) / 1e9))
+                        Text(String(format: "Add drafter (%.1f GB)", Double(details.drafterBytes) / 1e9))
                     }
                     .toggleStyle(.checkbox)
                     .disabled(downloads.jobs[model.id]?.busy == true)
-                    .help("\(drafter): built for a model of exactly this shape, from Kapitsa’s catalog. It is placed in the model’s folder as dflash2/. On a fine-tuned model fewer drafted tokens are accepted, so the gain can be smaller.")
+                    .help("Downloaded with the model. On a fine-tuned model fewer drafted tokens are accepted, so the gain can be smaller.")
                     if let card = URL(string: "https://huggingface.co/\(drafter)") { Link("Drafter ↗", destination: card) }
+                }
+                if details.hasMTP {
+                    Badge(text: "MTP", color: .green, symbol: "bolt.fill")
+                        .help("The upload keeps the model’s own multi-token-prediction heads; Kapitsa drafts with them when no drafter is used.")
+                } else {
+                    Badge(text: "No MTP", color: .secondary, symbol: "bolt.slash")
+                        .help("This upload left out the model’s multi-token-prediction heads. A DFlash2 drafter does not need them.")
                 }
             }.font(.caption)
         }
