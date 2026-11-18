@@ -84,21 +84,44 @@ enum ModelScanner {
     }
 
     static func candidates(in root: URL) -> [URL] {
+        var visited = Set<String>(), found: [URL] = []
+        collect(root, depth: 0, visited: &visited, into: &found)
+        return found
+    }
+
+    /// A folder with a config.json is a model; the rest of the tree is walked at most 6 levels deep. A symbolic link to
+    /// a folder is walked too, under the link's own path, so a library of links into model folders kept elsewhere
+    /// lists them by the links' names, with the drafters inside them. The enumerator lists nothing under a link and
+    /// never enters one, so the real folder is walked and what it holds is named under the link. Every real folder
+    /// is walked once, so links back up the tree or two links to one model cannot loop or repeat.
+    private static func collect(_ root: URL, depth: Int, visited: inout Set<String>, into found: inout [URL]) {
         let fm = FileManager.default
-        var found: [URL] = []
+        let real = root.resolvingSymlinksInPath()
+        guard visited.insert(real.path).inserted else { return }
         if fm.fileExists(atPath: root.appendingPathComponent("config.json").path) { found.append(root) }
-        guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
-                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return found }
-        for case let url as URL in walker {
-            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            if isDirectory {
-                if skipped.contains(url.lastPathComponent) || walker.level >= 6 { walker.skipDescendants(); continue }
+        guard let walker = fm.enumerator(at: real, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return }
+        for case let item as URL in walker {
+            // The item's path may spell the real folder differently (/private/tmp against /tmp), so the part under
+            // it is taken by depth, not by prefix.
+            let url = item.pathComponents.suffix(walker.level).reduce(root) { $0.appendingPathComponent($1) }
+            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if values?.isDirectory == true {
+                if skipped.contains(url.lastPathComponent) || depth + walker.level >= 6 { walker.skipDescendants(); continue }
+                guard visited.insert(item.resolvingSymlinksInPath().path).inserted else { walker.skipDescendants(); continue }
                 if fm.fileExists(atPath: url.appendingPathComponent("config.json").path) { found.append(url) }
+            } else if values?.isSymbolicLink == true {
+                var isFolder: ObjCBool = false
+                if !skipped.contains(url.lastPathComponent), depth + walker.level < 6,
+                   fm.fileExists(atPath: url.path, isDirectory: &isFolder), isFolder.boolValue {
+                    collect(url, depth: depth + walker.level, visited: &visited, into: &found)
+                } else if url.pathExtension.lowercased() == "gguf" {
+                    found.append(url)
+                }
             } else if url.pathExtension.lowercased() == "gguf" {
                 found.append(url)
             }
         }
-        return found
     }
 
     static func describe(_ url: URL, library: String, verified: [String: RegistryEntry]) -> LocalModel {
