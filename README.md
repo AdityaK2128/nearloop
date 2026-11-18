@@ -104,7 +104,7 @@ The sources are in `App/` (SwiftUI, no dependencies) and the icon in `icon/` (`m
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=kapitsa-notary scripts/package.sh
 ```
 
-The header of `scripts/package.sh` explains the one-time notary setup. The bundled Kapitsa never updates itself (that would break the app's signature), so rebuild to update it.
+The header of `scripts/package.sh` explains the one-time notary setup. The bundled Kapitsa never updates itself (that would break the app's signature), so rebuild to update it. To run a Kapitsa you installed with Homebrew or built yourself instead of the bundled copy, pick it under Settings › About › Engine: Nearloop then uses it for the server, downloads, imports, benchmarks and the coding agents, and still keeps it from updating itself while running.
 
 ## Support
 

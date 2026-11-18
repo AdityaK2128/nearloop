@@ -208,13 +208,36 @@ struct StorageSettings: View {
 }
 
 struct AboutSettings: View {
+    @AppStorage("enginePath") private var engine = ""
     @State private var version = "…"
+    @State private var installed: [URL] = []
+
+    private var home: String { FileManager.default.homeDirectoryForCurrentUser.path }
+    private func short(_ path: String) -> String { path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path }
+    /// The chosen engine is gone (uninstalled, or on a drive that is not connected): the bundled copy stands in.
+    private var chosenMissing: Bool { !engine.isEmpty && !FileManager.default.isExecutableFile(atPath: engine) }
 
     var body: some View {
         Form {
             LabeledContent("Nearloop", value: "\(Updater.currentVersion) (\(Updater.currentBuild))")
-            LabeledContent("Engine Version", value: version)
-            LabeledContent("Engine Path", value: Kapitsa.binary?.path ?? "Not Found")
+            Section {
+                Picker("Engine", selection: $engine) {
+                    Text(Kapitsa.bundled == nil ? "Bundled (not in this build)" : "Bundled").tag("")
+                    ForEach(installed, id: \.path) { Text(short($0.path)).tag($0.path) }
+                    if !engine.isEmpty, !installed.contains(where: { $0.path == engine }) { Text(short(engine)).tag(engine) }
+                }
+                LabeledContent("Engine Version", value: version)
+                LabeledContent("Engine Path", value: Kapitsa.binary?.path ?? "Not Found")
+                HStack {
+                    Button("Choose…") { choose() }
+                    Button("Rescan") { Kapitsa.refreshShellPath(); scan() }
+                }
+            } footer: {
+                Text(chosenMissing
+                     ? "\(short(engine)) is not an executable file; the bundled engine stands in until it is back."
+                     : "A Kapitsa installed with Homebrew, or one you built yourself, takes the bundled copy's place for the server, downloads, imports, benchmarks and the coding agents. It is used from the next model load on; a running model keeps the engine it started with. The engine never updates itself while Nearloop runs it.")
+                    .foregroundStyle(chosenMissing ? .orange : .secondary)
+            }
             Text("Powered by Kapitsa, the open-source inference engine for Apple silicon by Nace AI, licensed under the Apache License 2.0. License and notices are included in the app bundle. This app is independent of the Kapitsa project. Chat’s web search follows the design of oMLX’s, also under the Apache License 2.0.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 16) {
@@ -224,6 +247,24 @@ struct AboutSettings: View {
             }.font(.callout)
         }
         .formStyle(.grouped)
-        .task { version = await Task.detached { Kapitsa.version() }.value }
+        .task(id: engine) { scan() }
+    }
+
+    /// Reads the version and the installed copies off the main thread: both may run a shell or the engine.
+    private func scan() {
+        Task.detached {
+            let found = Kapitsa.installed, current = Kapitsa.version()
+            await MainActor.run { installed = found; version = current }
+        }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.showsHiddenFiles = true
+        panel.message = "Choose a kapitsa executable"
+        panel.directoryURL = URL(fileURLWithPath: installed.first?.deletingLastPathComponent().path ?? "/opt/homebrew/bin")
+        if panel.runModal() == .OK, let url = panel.url { engine = url.path }
     }
 }

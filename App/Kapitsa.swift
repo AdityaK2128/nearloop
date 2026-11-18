@@ -54,6 +54,8 @@ enum Prefs {
     static var shareOnNetwork: Bool { defaults.bool(forKey: "shareOnNetwork") }
     static var terminal: String { defaults.string(forKey: "terminalApp") ?? "terminal" }
     static var runtimeFolder: String? { defaults.string(forKey: "runtimeFolder").flatMap { $0.isEmpty ? nil : $0 } }
+    /// The kapitsa executable chosen in Settings › About; nil runs the copy bundled in the app.
+    static var engine: String? { defaults.string(forKey: "enginePath").flatMap { $0.isEmpty ? nil : $0 } }
     static var libraries: [String] {
         get { defaults.stringArray(forKey: "libraryFolders") ?? [] }
         set { defaults.set(newValue, forKey: "libraryFolders") }
@@ -102,14 +104,32 @@ enum Prefs {
 enum Kapitsa {
     struct Failure: LocalizedError { let errorDescription: String? }
 
-    /// The copy bundled in Contents/MacOS, else KAPITSA_BIN or an installed one (development builds).
+    /// The kapitsa chosen in Settings › About (one installed with Homebrew, or built by the user), as long as it is
+    /// still there; else the copy bundled in Contents/MacOS; else KAPITSA_BIN or an installed one (development builds).
     static var binary: URL? {
-        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "kapitsa") { return bundled }
+        if let chosen = Prefs.engine, FileManager.default.isExecutableFile(atPath: chosen) { return URL(fileURLWithPath: chosen) }
+        if let bundled { return bundled }
         if let custom = ProcessInfo.processInfo.environment["KAPITSA_BIN"], FileManager.default.isExecutableFile(atPath: custom) {
             return URL(fileURLWithPath: custom)
         }
-        return ["/opt/homebrew/bin/kapitsa", "/usr/local/bin/kapitsa"].map(URL.init(fileURLWithPath:))
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+        return installed.first
+    }
+
+    /// The copy bundled in Contents/MacOS, when this build has one.
+    static var bundled: URL? { Bundle.main.url(forAuxiliaryExecutable: "kapitsa") }
+
+    /// The kapitsa executables installed on this Mac: Homebrew's, /usr/local's and any on the login shell's PATH,
+    /// one per real file, leaving out the bundled copy and the app's own `kapitsa` command.
+    static var installed: [URL] {
+        let fm = FileManager.default
+        var seen = Set([bundled, commandURL].compactMap { $0?.resolvingSymlinksInPath().path })
+        var found: [URL] = []
+        for folder in ["/opt/homebrew/bin", "/usr/local/bin"] + loginPath.split(separator: ":").map(String.init) {
+            let url = URL(fileURLWithPath: folder).appendingPathComponent("kapitsa")
+            guard fm.isExecutableFile(atPath: url.path), seen.insert(url.resolvingSymlinksInPath().path).inserted else { continue }
+            found.append(url)
+        }
+        return found
     }
 
     static var home: URL {
@@ -201,7 +221,8 @@ enum Kapitsa {
     static func environment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = loginPath
-        // A bundled binary must never replace itself inside the signed app.
+        // A bundled binary must never replace itself inside the signed app, and a chosen one is updated by whoever
+        // installed it (Homebrew, or the user's own build), not behind the app's back.
         env["KAPITSA_NO_AUTO_UPDATE"] = "1"
         if let custom = Prefs.runtimeFolder {
             let root = URL(fileURLWithPath: custom)
@@ -288,7 +309,7 @@ enum Kapitsa {
         return view.path
     }
 
-    /// `kapitsa` on the user's PATH, running this app's copy with this app's storage settings.
+    /// `kapitsa` on the user's PATH, running the engine Nearloop uses with this app's storage settings.
     static var commandURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/kapitsa") }
     static let commandMarker = "# Installed by Nearloop"
     /// The marker the command carried before the app was renamed; such a command shows as outdated.
@@ -307,7 +328,7 @@ enum Kapitsa {
         if commandState == "foreign" {
             throw Failure(errorDescription: "\(commandURL.path) already exists and was not installed by this app. Remove it first if you want this app's Kapitsa there.")
         }
-        var script = "#!/bin/zsh\n\(commandMarker). Runs the Kapitsa bundled in the app.\n"
+        var script = "#!/bin/zsh\n\(commandMarker). Runs the Kapitsa engine Nearloop uses.\n"
         script += "export KAPITSA_NO_AUTO_UPDATE=1\n"
         if let custom = Prefs.runtimeFolder { script += "export KAPITSA_HOME=\(Agents.quote(custom))\n" }
         script += "exec \(Agents.quote(binary.path)) \"$@\"\n"
