@@ -302,20 +302,20 @@ private struct HuggingFaceRow: View {
                 if model.handlesTools || model.handlesThinking || model.baseModel != nil || files != nil || details != nil {
                     HStack(spacing: 14) {
                         if let vision = details?.vision ?? files?.vision {
-                            Badge(text: vision ? "Vision" : "Text only", color: vision ? .blue : .secondary, symbol: vision ? "eye" : "text.alignleft")
+                            Label(vision ? "Vision" : "Text only", systemImage: vision ? "eye" : "text.alignleft")
                                 .help(vision ? "The upload keeps the model’s vision tower (vision_config and the image preprocessor), so it is downloaded with the model and the chat can take images."
                                              : "A text-only conversion: the vision tower was left out, so images are not understood.")
                         }
                         if model.handlesTools {
-                            Badge(text: "Tools", color: .teal, symbol: "wrench.and.screwdriver").help("The chat template renders tool definitions and tool calls.")
+                            Label("Tools", systemImage: "wrench.and.screwdriver").help("The chat template renders tool definitions and tool calls.")
                         }
                         if model.handlesThinking {
-                            Badge(text: "Thinking", color: .orange, symbol: "lightbulb").help("The chat template has a thinking switch or a thinking block.")
+                            Label("Thinking", systemImage: "lightbulb").help("The chat template has a thinking switch or a thinking block.")
                         }
                         if let base = model.baseModel {
                             Text("from \(base)").foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle).help("The model this one was quantized or tuned from, as the repository declares it.")
                         }
-                    }.font(.caption).foregroundStyle(.secondary)
+                    }.font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                 }
                 if let problem = details?.problem ?? spaceProblem { Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
                 speedups
