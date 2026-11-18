@@ -126,11 +126,13 @@ private struct HuggingFaceSection: View {
     @State private var error = ""
     @State private var onlyCompatible = true
     @State private var sort = HuggingFace.Sort.downloads
+    /// The Hub only sorts descending, so ascending turns the page it returns around: the same 50 results, smallest first.
+    @State private var ascending = false
 
     var shown: [HuggingFace.Model] {
-        let rows = results.filter { !onlyCompatible || $0.likelyCompatible }
-        guard sort == .size else { return rows }
-        return rows.sorted { ($0.estimatedBytes ?? -1) > ($1.estimatedBytes ?? -1) }
+        var rows = results.filter { !onlyCompatible || $0.likelyCompatible }
+        if sort == .size { rows.sort { ($0.estimatedBytes ?? -1) > ($1.estimatedBytes ?? -1) } }
+        return ascending ? rows.reversed() : rows
     }
 
     var body: some View {
@@ -149,6 +151,10 @@ private struct HuggingFaceSection: View {
                 Picker("Sort by", selection: $sort) {
                     ForEach(HuggingFace.Sort.allCases) { Text($0.title).tag($0) }
                 }.fixedSize().onChange(of: sort) { _, _ in search() }
+                Picker("Order", selection: $ascending) {
+                    Label("Descending", systemImage: "arrow.down").tag(false)
+                    Label("Ascending", systemImage: "arrow.up").tag(true)
+                }.labelsHidden().fixedSize().help("Ascending turns the Hub's page around: the same results, smallest first.")
                 Spacer()
                 if !results.isEmpty { Text("\(shown.count) of \(results.count) results").font(.caption).foregroundStyle(.secondary) }
             }
