@@ -249,6 +249,8 @@ enum HuggingFace {
     struct Details {
         let bytes: Int64
         let problem: String?
+        /// The config has a vision tower (vision_config), so the upload answers about images too.
+        var vision = false
         /// The repository ships MTP heads (multi-token prediction), which Kapitsa uses as they are.
         var hasMTP = false
         /// A DFlash drafter from Kapitsa's catalog whose shape matches this model, and its size.
@@ -270,16 +272,28 @@ enum HuggingFace {
         return try JSONDecoder().decode([Model].self, from: data)
     }
 
-    /// The files of the repository's current revision, added up: what a download writes. (The Hub's `usedStorage`
-    /// counts every revision ever pushed, often twice that.) Read once per repository.
-    @MainActor static var sizes: [String: Int64] = [:]
-    static func size(_ id: String) async -> Int64? {
-        if let known = await MainActor.run(body: { sizes[id] }) { return known }
+    /// What the repository's current revision holds, from one listing of its files.
+    struct Files {
+        /// The files added up: what a download writes. (The Hub's `usedStorage` counts every revision ever
+        /// pushed, often twice that.)
+        let bytes: Int64
+        /// An MLX upload that kept the model's vision tower ships its image preprocessor settings with it; a
+        /// text-only conversion drops both. Verify reads the config itself, which is the final word.
+        let vision: Bool
+    }
+
+    /// Read once per repository, when its row appears.
+    @MainActor static var files: [String: Files] = [:]
+    static func files(_ id: String) async -> Files? {
+        if let known = await MainActor.run(body: { files[id] }) { return known }
         guard let info = try? await json("https://huggingface.co/api/models/\(id)?blobs=true") else { return nil }
-        let bytes = ((info["siblings"] as? [[String: Any]]) ?? []).reduce(Int64(0)) { $0 + Int64(($1["size"] as? Int) ?? 0) }
+        let siblings = (info["siblings"] as? [[String: Any]]) ?? []
+        let bytes = siblings.reduce(Int64(0)) { $0 + Int64(($1["size"] as? Int) ?? 0) }
         guard bytes > 0 else { return nil }
-        await MainActor.run { sizes[id] = bytes }
-        return bytes
+        let names = siblings.compactMap { $0["rfilename"] as? String }
+        let result = Files(bytes: bytes, vision: names.contains("preprocessor_config.json"))
+        await MainActor.run { files[id] = result }
+        return result
     }
 
     /// Download size and whether the repository's config is one Kapitsa runs.
@@ -299,6 +313,7 @@ enum HuggingFace {
             return Details(bytes: bytes, problem: "Unsupported architecture: \(config["model_type"] as? String ?? "unknown"). Hugging Face downloads support Qwen3.5-family MLX models.")
         }
         var result = Details(bytes: bytes, problem: ModelScanner.quantizationError(config))
+        result.vision = config["vision_config"] != nil
         // MTP heads live in the weights (mtp.* tensors) or in a file of their own.
         let names = siblings.compactMap { $0["rfilename"] as? String }
         if names.contains(where: { URL(fileURLWithPath: $0).lastPathComponent.lowercased().hasPrefix("mtp") }) {

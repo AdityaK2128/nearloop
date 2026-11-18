@@ -117,6 +117,10 @@ private struct ModelDetail: View {
                           symbol: model.verified ? "checkmark.seal.fill" : nil)
                     Badge(text: model.format + " · " + model.architecture)
                     if !model.drafter.isEmpty { Badge(text: "DFlash2", color: .purple, symbol: "bolt") }
+                    if model.loadable, model.format == "MLX" {
+                        Badge(text: model.vision ? "Vision" : "Text only", color: model.vision ? .blue : .secondary, symbol: model.vision ? "eye" : "text.alignleft")
+                            .help(model.vision ? "The folder keeps the model’s vision tower, so the chat can take images." : "A text-only conversion: the vision tower was left out.")
+                    }
                     if isLoaded { Badge(text: "Loaded", color: .green, symbol: "bolt.fill") }
                 }
                 Text(model.reason).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

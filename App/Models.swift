@@ -19,6 +19,8 @@ struct LocalModel: Identifiable, Hashable {
     var status = ModelStatus.unsupported
     var reason = ""
     var drafter = ""
+    /// The folder keeps the model's vision tower (vision_config in config.json), so the chat can take images.
+    var vision = false
     var nativeContext: Int?
     var contexts: [String] = []
     /// KV-cache memory per token of conversation, from the config (see `ModelScanner.kvBytesPerToken`).
@@ -193,6 +195,7 @@ enum ModelScanner {
         }
         let config = readJSON(url.appendingPathComponent("config.json")) ?? [:]
         row.architecture = config["model_type"] as? String ?? "unknown"
+        row.vision = config["vision_config"] != nil
         let files = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
         let weights = files.filter { $0.hasSuffix(".safetensors") && !$0.hasPrefix(".") }
         row.size = weights.reduce(Int64(0)) { total, name in total + fm.sizeFollowingLinks(atPath: url.appendingPathComponent(name).path) }

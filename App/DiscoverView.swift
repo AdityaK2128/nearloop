@@ -182,8 +182,9 @@ private struct HuggingFaceRow: View {
     @State private var details: HuggingFace.Details?
     @State private var checking = false
     @State private var withDrafter = true
-    /// The files' sizes added up, read when the row appears; until then the listing's estimate shows, marked ~.
-    @State private var exactBytes: Int64?
+    /// The repository's files, read when the row appears: their sizes added up (until then the listing's
+    /// estimate shows, marked ~) and whether the vision tower came along.
+    @State private var files: HuggingFace.Files?
 
     var folder: URL { Kapitsa.downloads.appendingPathComponent(model.id.replacingOccurrences(of: "/", with: "--")) }
     var owner: String { String(model.id.split(separator: "/").first ?? "") }
@@ -200,13 +201,13 @@ private struct HuggingFaceRow: View {
             if let drafter = details?.drafter ?? downloads.attachedDrafter(of: model.id),
                let job = downloads.jobs[drafter], job.showsProgress { DownloadProgressLine(job: job) }
         }.card(padding: 16)
-        .task(id: model.id) { exactBytes = await HuggingFace.size(model.id) }
+        .task(id: model.id) { files = await HuggingFace.files(model.id) }
     }
 
     /// Verified size first, then the files' sizes, then the listing's estimate.
     private var sizeText: (text: String, gigabytes: Double)? {
         if let details, details.bytes > 0 { return (String(format: "%.1f GB", Double(details.bytes) / 1e9), Double(details.bytes) / 1e9) }
-        if let exactBytes { return (String(format: "%.1f GB", Double(exactBytes) / 1e9), Double(exactBytes) / 1e9) }
+        if let files { return (String(format: "%.1f GB", Double(files.bytes) / 1e9), Double(files.bytes) / 1e9) }
         if let estimate = model.estimatedBytes { return (String(format: "~%.1f GB", Double(estimate) / 1e9), Double(estimate) / 1e9) }
         return nil
     }
@@ -292,8 +293,13 @@ private struct HuggingFaceRow: View {
                     }
                     if let card = URL(string: "https://huggingface.co/\(model.id)") { Link("Model card ↗", destination: card) }
                 }.font(.caption).labelStyle(.titleAndIcon)
-                if model.handlesTools || model.handlesThinking || model.baseModel != nil {
+                if model.handlesTools || model.handlesThinking || model.baseModel != nil || files != nil || details != nil {
                     HStack(spacing: 14) {
+                        if let vision = details?.vision ?? files?.vision {
+                            Badge(text: vision ? "Vision" : "Text only", color: vision ? .blue : .secondary, symbol: vision ? "eye" : "text.alignleft")
+                                .help(vision ? "The upload keeps the model’s vision tower (vision_config and the image preprocessor), so it is downloaded with the model and the chat can take images."
+                                             : "A text-only conversion: the vision tower was left out, so images are not understood.")
+                        }
                         if model.handlesTools {
                             Label("Tools", systemImage: "wrench.and.screwdriver").help("The chat template renders tool definitions and tool calls.")
                         }
