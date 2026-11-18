@@ -301,15 +301,15 @@ private struct HuggingFaceRow: View {
                                              : "A text-only conversion: the vision tower was left out, so images are not understood.")
                         }
                         if model.handlesTools {
-                            Label("Tools", systemImage: "wrench.and.screwdriver").help("The chat template renders tool definitions and tool calls.")
+                            Badge(text: "Tools", color: .teal, symbol: "wrench.and.screwdriver").help("The chat template renders tool definitions and tool calls.")
                         }
                         if model.handlesThinking {
-                            Label("Thinking", systemImage: "lightbulb").help("The chat template has a thinking switch or a thinking block.")
+                            Badge(text: "Thinking", color: .orange, symbol: "lightbulb").help("The chat template has a thinking switch or a thinking block.")
                         }
                         if let base = model.baseModel {
                             Text("from \(base)").foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle).help("The model this one was quantized or tuned from, as the repository declares it.")
                         }
-                    }.font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+                    }.font(.caption).foregroundStyle(.secondary)
                 }
                 if let problem = details?.problem ?? spaceProblem { Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
                 speedups
