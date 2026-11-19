@@ -310,10 +310,10 @@ struct AboutSettings: View {
         case .bundled:
             return "The engine that ships inside Nearloop. It changes only with the app. A Kapitsa installed with Homebrew, one you built yourself, or the latest commit of main built here takes its place for the server, downloads, imports, benchmarks and the coding agents, from the next model load on; a running model keeps the engine it started with."
         case .installed:
-            return "An installed Kapitsa, used in the bundled copy's place. Update runs its own `kapitsa update`: Homebrew's `brew upgrade` for a Homebrew install, Kapitsa's signed download from GitHub otherwise. A running model keeps the engine it started with until it is reloaded."
+            return "An installed Kapitsa, used in the bundled copy's place. Update runs its own kapitsa update: Homebrew's brew upgrade for a Homebrew install, Kapitsa's signed download from GitHub otherwise. A running model keeps the engine it started with until it is reloaded."
         case .source(let checkout, let built):
             return built
-                ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main and counts the commits this checkout is behind; Build pulls main and rebuilds the `kapitsa` and `systemone` targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
+                ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main and counts the commits this checkout is behind; Build pulls main and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
                 : "Not built yet. Build clones nace-ai/kapitsa into \(short(checkout.source.path)), builds the latest commit of main in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
         }
     }
