@@ -342,6 +342,41 @@ enum Kapitsa {
         return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Whether the engine in use can be updated in place: an installed copy can (`kapitsa update` runs Homebrew's
+    /// `brew upgrade` for a Homebrew install and Kapitsa's own updater otherwise); the copy bundled in the signed app
+    /// cannot, it changes only with the app.
+    static var updatable: Bool {
+        guard let binary else { return false }
+        return binary.resolvingSymlinksInPath() != bundled?.resolvingSymlinksInPath()
+    }
+
+    /// What `kapitsa update --check` says: a newer release is out, this one is the latest, or it could not tell.
+    enum UpdateCheck: Equatable { case upToDate(String), available(String), unknown(String) }
+
+    /// Asks github.com, through the engine itself, whether a newer release is out. Exit 0: up to date; 100: a newer
+    /// release; anything else: no answer (offline, say). The first line of the engine's own words is kept for the UI.
+    static func checkForUpdate() -> UpdateCheck {
+        guard let binary else { return .unknown("Not found") }
+        do {
+            let result = try runSync(binary.path, ["update", "--check"], env: environment(), timeout: 30)
+            let line = result.output.split(whereSeparator: \.isNewline).first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+            switch result.code {
+            case 0: return .upToDate(line.isEmpty ? "Up to date" : line)
+            case 100: return .available(line.isEmpty ? "A newer release is out" : line)
+            default: return .unknown(line.isEmpty ? "Could not check (exit \(result.code))" : line)
+            }
+        } catch {
+            return .unknown(error.localizedDescription)
+        }
+    }
+
+    /// Runs `kapitsa update`: Homebrew's `brew upgrade` for a Homebrew install (it needs the login shell's PATH, which
+    /// environment() provides), Kapitsa's own download for a copy installed with install.sh. Minutes, not seconds.
+    static func update() throws -> Output {
+        guard let binary else { throw Failure(errorDescription: "Kapitsa engine not found.") }
+        return try runSync(binary.path, ["update"], env: environment(), timeout: 600)
+    }
+
     static func fitLabel(gigabytes: Double) -> String {
         let ram = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
         // One threshold for badges and recommendations: weights within two-thirds of memory leave room for context.

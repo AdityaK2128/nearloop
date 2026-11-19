@@ -211,6 +211,11 @@ struct AboutSettings: View {
     @AppStorage("enginePath") private var engine = ""
     @State private var version = "…"
     @State private var installed: [URL] = []
+    /// The last answer of `kapitsa update --check`, asked when the pane opens and after an update.
+    @State private var check: Kapitsa.UpdateCheck?
+    @State private var updating = false
+    /// How the last update ended, in the engine's own words, until the next check.
+    @State private var updateResult: String?
 
     private var home: String { FileManager.default.homeDirectoryForCurrentUser.path }
     private func short(_ path: String) -> String { path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path }
@@ -228,14 +233,24 @@ struct AboutSettings: View {
                 }
                 LabeledContent("Engine Version", value: version)
                 LabeledContent("Engine Path", value: Kapitsa.binary?.path ?? "Not Found")
+                LabeledContent("Engine Update") {
+                    HStack(spacing: 8) {
+                        if updating { ProgressView().controlSize(.small) }
+                        Text(updateStatus).foregroundStyle(updateStatusColor)
+                    }
+                }
                 HStack {
                     Button("Choose…") { choose() }
                     Button("Rescan") { Kapitsa.refreshShellPath(); scan() }
+                    Spacer()
+                    Button("Check for Updates") { checkForUpdate() }.disabled(updating || !Kapitsa.updatable)
+                    Button(updating ? "Updating…" : "Update") { update() }
+                        .disabled(updating || !Kapitsa.updatable || check == nil || { if case .upToDate = check { return true } else { return false } }())
                 }
             } footer: {
                 Text(chosenMissing
                      ? "\(short(engine)) is not an executable file; the bundled engine stands in until it is back."
-                     : "A Kapitsa installed with Homebrew, or one you built yourself, takes the bundled copy's place for the server, downloads, imports, benchmarks and the coding agents. It is used from the next model load on; a running model keeps the engine it started with. The engine never updates itself while Nearloop runs it.")
+                     : "A Kapitsa installed with Homebrew, or one you built yourself, takes the bundled copy's place for the server, downloads, imports, benchmarks and the coding agents. It is used from the next model load on; a running model keeps the engine it started with. The engine never updates itself while Nearloop runs it; Update runs its own `kapitsa update` — Homebrew's `brew upgrade` for a Homebrew install, Kapitsa's download from GitHub otherwise. The bundled engine changes only with the app.")
                     .foregroundStyle(chosenMissing ? .orange : .secondary)
             }
             Text("Powered by Kapitsa, the open-source inference engine for Apple silicon by Nace AI, licensed under the Apache License 2.0. License and notices are included in the app bundle. This app is independent of the Kapitsa project. Chat’s web search follows the design of oMLX’s, also under the Apache License 2.0.")
@@ -247,7 +262,26 @@ struct AboutSettings: View {
             }.font(.callout)
         }
         .formStyle(.grouped)
-        .task(id: engine) { scan() }
+        .task(id: engine) { scan(); checkForUpdate() }
+    }
+
+    /// The Engine Update row, in a few words: what the check said, or how the update went.
+    private var updateStatus: String {
+        if updating { return "Running kapitsa update…" }
+        if let updateResult { return updateResult }
+        guard Kapitsa.updatable else { return Kapitsa.binary == nil ? "No engine" : "Bundled: updates with the app" }
+        switch check {
+        case .none: return "Checking…"
+        case .upToDate(let words), .available(let words), .unknown(let words): return words
+        }
+    }
+    private var updateStatusColor: Color {
+        if updating || updateResult != nil { return .secondary }
+        switch check {
+        case .available: return .primary
+        case .unknown: return .orange
+        default: return .secondary
+        }
     }
 
     /// Reads the version and the installed copies off the main thread: both may run a shell or the engine.
@@ -255,6 +289,35 @@ struct AboutSettings: View {
         Task.detached {
             let found = Kapitsa.installed, current = Kapitsa.version()
             await MainActor.run { installed = found; version = current }
+        }
+    }
+
+    /// Asks the engine whether a newer release is out; nothing for the bundled copy, which cannot change.
+    private func checkForUpdate() {
+        updateResult = nil
+        guard Kapitsa.updatable else { check = nil; return }
+        check = nil
+        Task.detached {
+            let answer = Kapitsa.checkForUpdate()
+            await MainActor.run { check = answer }
+        }
+    }
+
+    /// Runs `kapitsa update` and reads the version again: a running model keeps the engine it started with.
+    private func update() {
+        updating = true
+        updateResult = nil
+        Task.detached {
+            let outcome: String
+            do {
+                let result = try Kapitsa.update()
+                let last = result.output.split(whereSeparator: \.isNewline).last.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+                outcome = result.code == 0 ? (last.isEmpty ? "Updated" : last) : "Update failed (exit \(result.code)): \(last)"
+            } catch {
+                outcome = "Update failed: \(error.localizedDescription)"
+            }
+            let current = Kapitsa.version()
+            await MainActor.run { updating = false; updateResult = outcome; version = current }
         }
     }
 
