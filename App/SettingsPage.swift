@@ -261,8 +261,14 @@ struct AboutSettings: View {
                     Divider()
                     Text("Other…").tag(Self.other)
                 }
-                LabeledContent("Engine Version", value: version)
-                LabeledContent("Engine Path", value: Kapitsa.binary?.path ?? "Not Found")
+                // A source engine not built yet shows what it will be, not the bundled copy standing in for it.
+                if case .source(let checkout, built: false) = kind {
+                    LabeledContent("Engine Version", value: "Not built yet")
+                    LabeledContent("Engine Path", value: checkout.binary.path)
+                } else {
+                    LabeledContent("Engine Version", value: version)
+                    LabeledContent("Engine Path", value: Kapitsa.binary?.path ?? "Not Found")
+                }
                 LabeledContent("Engine Update") {
                     HStack(spacing: 8) {
                         if updating { ProgressView().controlSize(.small) }
@@ -281,7 +287,7 @@ struct AboutSettings: View {
                 case .source(let checkout, let built):
                     HStack {
                         Spacer()
-                        if built { Button("Check for Updates") { checkForUpdate() }.disabled(updating) }
+                        Button("Check for Updates") { checkForUpdate() }.disabled(updating)
                         Button(updating ? "Building…" : "Build") { build(checkout) }.disabled(updating || (built && !updateAvailable))
                     }
                 }
@@ -314,7 +320,7 @@ struct AboutSettings: View {
         case .source(let checkout, let built):
             return built
                 ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main and counts the commits this checkout is behind; Build pulls main and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
-                : "Not built yet. Build clones nace-ai/kapitsa into \(short(checkout.source.path)), builds the latest commit of main in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
+                : "Build clones nace-ai/kapitsa into \(short(checkout.source.path)), compiles the commit shown above in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
         }
     }
 
@@ -324,11 +330,10 @@ struct AboutSettings: View {
         if let updateResult { return updateResult }
         switch kind {
         case .bundled: return Kapitsa.binary == nil ? "No engine" : "Updates with the app"
-        case .source(_, built: false): return "Not built yet"
         case .source:
             switch sourceStatus {
             case .none: return "Checking main…"
-            case .atLatest(let words), .behind(_, let words), .unknown(let words): return words
+            case .atLatest(let words), .behind(_, let words), .remote(let words), .unknown(let words): return words
             }
         case .installed:
             switch check {
@@ -340,9 +345,9 @@ struct AboutSettings: View {
     private var updateStatusColor: Color {
         if updating || updateResult != nil { return .secondary }
         switch kind {
-        case .source(_, built: true):
+        case .source:
             switch sourceStatus {
-            case .behind: return .primary
+            case .behind, .remote: return .primary
             case .unknown: return .orange
             default: return .secondary
             }
@@ -381,8 +386,13 @@ struct AboutSettings: View {
         check = nil
         sourceStatus = nil
         switch kind {
-        case .bundled, .source(_, built: false):
+        case .bundled:
             return
+        case .source(_, built: false):
+            Task.detached {
+                let status = EngineSource.remote()
+                await MainActor.run { sourceStatus = status }
+            }
         case .source(let checkout, built: true):
             Task.detached {
                 let status = EngineSource.check(checkout)

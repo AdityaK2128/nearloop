@@ -56,22 +56,55 @@ enum EngineSource {
     enum Status: Equatable {
         case atLatest(String)
         case behind(Int, String)
+        /// What main holds right now, for a checkout that is not built yet: the commit a Build would compile.
+        case remote(String)
         case unknown(String)
     }
 
-    /// Fetches origin's main and says how many commits this checkout is behind it, by short hashes.
+    /// "3 hours ago", from a git or GitHub date.
+    static func age(_ iso: String) -> String? {
+        let parsers = [ISO8601DateFormatter(), { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f }()]
+        guard let date = parsers.lazy.compactMap({ $0.date(from: iso) }).first else { return nil }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// Fetches origin's main and says how many commits this checkout is behind it, by short hashes, with the age
+    /// of main's latest commit.
     static func check(_ checkout: Checkout) -> Status {
         guard let git = which("git") else { return .unknown("git is not installed: run xcode-select --install") }
         do {
             try step(git, ["-C", checkout.source.path, "fetch", "-q", "origin", "main"], timeout: 120)
             let head = try read(git, ["-C", checkout.source.path, "rev-parse", "--short", "HEAD"])
             let latest = try read(git, ["-C", checkout.source.path, "rev-parse", "--short", "origin/main"])
+            let when = age(try read(git, ["-C", checkout.source.path, "log", "-1", "--format=%cI", "origin/main"])).map { ", \($0)" } ?? ""
             let behind = Int(try read(git, ["-C", checkout.source.path, "rev-list", "--count", "HEAD..origin/main"])) ?? 0
-            if behind == 0 { return .atLatest("At the latest commit on main (\(head))") }
-            return .behind(behind, "\(behind) commit\(behind == 1 ? "" : "s") behind main (\(head) → \(latest))")
+            if behind == 0 { return .atLatest("At the latest commit on main (\(head)\(when))") }
+            return .behind(behind, "\(behind) commit\(behind == 1 ? "" : "s") behind main (\(head) → \(latest)\(when))")
         } catch {
             return .unknown(error.localizedDescription)
         }
+    }
+
+    /// What main holds right now, asked of GitHub before there is a checkout: the commit a first Build compiles.
+    static func remote() -> Status {
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/nace-ai/kapitsa/commits/main")!, timeoutInterval: 20)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let done = DispatchSemaphore(value: 0)
+        var outcome: Status = .unknown("Could not reach GitHub")
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { done.signal() }
+            if let error { outcome = .unknown("Could not reach GitHub: \(error.localizedDescription)"); return }
+            guard let data, (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let sha = json["sha"] as? String else { outcome = .unknown("GitHub gave no answer about main"); return }
+            let date = ((json["commit"] as? [String: Any])?["committer"] as? [String: Any])?["date"] as? String
+            let when = date.flatMap(age).map { ", \($0)" } ?? ""
+            outcome = .remote("Latest on main: \(sha.prefix(7))\(when) — not built yet")
+        }.resume()
+        _ = done.wait(timeout: .now() + 25)
+        return outcome
     }
 
     /// Clones the repository when the checkout is not there yet, pulls main, configures and builds `kapitsa` and
