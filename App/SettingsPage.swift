@@ -213,7 +213,12 @@ struct AboutSettings: View {
     @State private var installed: [URL] = []
     /// The last answer of `kapitsa update --check`, asked when the pane opens and after an update.
     @State private var check: Kapitsa.UpdateCheck?
+    /// For an engine built from source: how far its checkout is behind main.
+    @State private var source: EngineSource.Checkout?
+    @State private var sourceStatus: EngineSource.Status?
     @State private var updating = false
+    /// The step of a source build under way, in a few words.
+    @State private var buildStep = ""
     /// How the last update ended, in the engine's own words, until the next check.
     @State private var updateResult: String?
 
@@ -242,15 +247,20 @@ struct AboutSettings: View {
                 HStack {
                     Button("Choose…") { choose() }
                     Button("Rescan") { Kapitsa.refreshShellPath(); scan() }
+                    if source == nil {
+                        Button("Build from Source…") { buildFromSource() }.disabled(updating)
+                            .help("Clones nace-ai/kapitsa into Nearloop's Application Support folder, builds it at the latest commit of main and runs it as the engine.")
+                    }
                     Spacer()
                     Button("Check for Updates") { checkForUpdate() }.disabled(updating || !Kapitsa.updatable)
-                    Button(updating ? "Updating…" : "Update") { update() }
-                        .disabled(updating || !Kapitsa.updatable || check == nil || { if case .upToDate = check { return true } else { return false } }())
+                    Button(updating ? "Updating…" : "Update") { update() }.disabled(updating || !updateAvailable)
                 }
             } footer: {
                 Text(chosenMissing
                      ? "\(short(engine)) is not an executable file; the bundled engine stands in until it is back."
-                     : "A Kapitsa installed with Homebrew, or one you built yourself, takes the bundled copy's place for the server, downloads, imports, benchmarks and the coding agents. It is used from the next model load on; a running model keeps the engine it started with. The engine never updates itself while Nearloop runs it; Update runs its own `kapitsa update` — Homebrew's `brew upgrade` for a Homebrew install, Kapitsa's download from GitHub otherwise. The bundled engine changes only with the app.")
+                     : source != nil
+                     ? "This engine is built from source, in \(short(source!.source.path)). Check for Updates fetches main and counts the commits this checkout is behind; Update pulls main and rebuilds the `kapitsa` and `systemone` targets in Release (git and CMake from the login shell's PATH). A running model keeps the engine it started with until it is reloaded."
+                     : "A Kapitsa installed with Homebrew, or one you built yourself, takes the bundled copy's place for the server, downloads, imports, benchmarks and the coding agents. It is used from the next model load on; a running model keeps the engine it started with. The engine never updates itself while Nearloop runs it; Update runs its own `kapitsa update` — Homebrew's `brew upgrade` for a Homebrew install, Kapitsa's download from GitHub otherwise. Build from Source… clones nace-ai/kapitsa and builds the latest commit of main instead, for an engine newer than any release. The bundled engine changes only with the app.")
                     .foregroundStyle(chosenMissing ? .orange : .secondary)
             }
             Text("Powered by Kapitsa, the open-source inference engine for Apple silicon by Nace AI, licensed under the Apache License 2.0. License and notices are included in the app bundle. This app is independent of the Kapitsa project. Chat’s web search follows the design of oMLX’s, also under the Apache License 2.0.")
@@ -267,9 +277,15 @@ struct AboutSettings: View {
 
     /// The Engine Update row, in a few words: what the check said, or how the update went.
     private var updateStatus: String {
-        if updating { return "Running kapitsa update…" }
+        if updating { return buildStep.isEmpty ? "Running kapitsa update…" : buildStep }
         if let updateResult { return updateResult }
         guard Kapitsa.updatable else { return Kapitsa.binary == nil ? "No engine" : "Bundled: updates with the app" }
+        if source != nil {
+            switch sourceStatus {
+            case .none: return "Checking main…"
+            case .atLatest(let words), .behind(_, let words), .unknown(let words): return words
+            }
+        }
         switch check {
         case .none: return "Checking…"
         case .upToDate(let words), .available(let words), .unknown(let words): return words
@@ -277,11 +293,24 @@ struct AboutSettings: View {
     }
     private var updateStatusColor: Color {
         if updating || updateResult != nil { return .secondary }
+        if source != nil {
+            switch sourceStatus {
+            case .behind: return .primary
+            case .unknown: return .orange
+            default: return .secondary
+            }
+        }
         switch check {
         case .available: return .primary
         case .unknown: return .orange
         default: return .secondary
         }
+    }
+    /// Something to install: a newer release for an installed engine, newer commits for a source build.
+    private var updateAvailable: Bool {
+        guard Kapitsa.updatable else { return false }
+        if source != nil { if case .behind = sourceStatus { return true } else { return false } }
+        if case .available = check { return true } else { return false }
     }
 
     /// Reads the version and the installed copies off the main thread: both may run a shell or the engine.
@@ -292,19 +321,31 @@ struct AboutSettings: View {
         }
     }
 
-    /// Asks the engine whether a newer release is out; nothing for the bundled copy, which cannot change.
+    /// Asks whether there is something newer: for a source build, commits on main past this checkout; for an
+    /// installed engine, a newer release; nothing for the bundled copy, which cannot change.
     private func checkForUpdate() {
         updateResult = nil
-        guard Kapitsa.updatable else { check = nil; return }
+        source = EngineSource.current
         check = nil
-        Task.detached {
-            let answer = Kapitsa.checkForUpdate()
-            await MainActor.run { check = answer }
+        sourceStatus = nil
+        guard Kapitsa.updatable else { return }
+        if let checkout = source {
+            Task.detached {
+                let status = EngineSource.check(checkout)
+                await MainActor.run { sourceStatus = status }
+            }
+        } else {
+            Task.detached {
+                let answer = Kapitsa.checkForUpdate()
+                await MainActor.run { check = answer }
+            }
         }
     }
 
-    /// Runs `kapitsa update` and reads the version again: a running model keeps the engine it started with.
+    /// Updates the engine in use and reads the version again: a source build pulls main and rebuilds, an
+    /// installed engine runs `kapitsa update`. A running model keeps the engine it started with.
     private func update() {
+        if let checkout = source { build(checkout, thenUse: false); return }
         updating = true
         updateResult = nil
         Task.detached {
@@ -318,6 +359,33 @@ struct AboutSettings: View {
             }
             let current = Kapitsa.version()
             await MainActor.run { updating = false; updateResult = outcome; version = current }
+        }
+    }
+
+    /// Clones nace-ai/kapitsa into Nearloop's own folder, builds main and makes that binary the engine.
+    private func buildFromSource() {
+        build(EngineSource.managed, thenUse: true)
+    }
+
+    private func build(_ checkout: EngineSource.Checkout, thenUse: Bool) {
+        updating = true
+        updateResult = nil
+        buildStep = "Starting…"
+        Task.detached {
+            let failure: String?
+            do {
+                try EngineSource.update(checkout) { step in Task { @MainActor in buildStep = step } }
+                if thenUse { await MainActor.run { engine = checkout.binary.path } }
+                failure = nil
+            } catch {
+                failure = "Build failed: \(error.localizedDescription)"
+            }
+            let current = Kapitsa.version()
+            await MainActor.run {
+                updating = false; buildStep = ""; version = current
+                // A build that went through is checked again at once: the row then says it is at main's latest commit.
+                if let failure { updateResult = failure } else { checkForUpdate() }
+            }
         }
     }
 
