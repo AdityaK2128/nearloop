@@ -137,7 +137,7 @@ final class AppStore: ObservableObject {
         await scan()
         await loadCatalog()
         if Prefs.autoStart, !server.running, let path = Prefs.lastModel, let model = model(at: path) {
-            load(model, context: model.contexts.contains(Prefs.lastContext) ? Prefs.lastContext : model.largestPreset)
+            load(model, context: model.accepts(Prefs.lastContext) ? Prefs.lastContext : model.largestPreset)
         }
     }
 
@@ -213,7 +213,7 @@ final class AppStore: ObservableObject {
     func benchmark(for model: LocalModel) -> BenchResult? { BenchmarkStore.best(benchmarks, for: model) }
 
     func clampContext() {
-        guard let model = selected, model.loadable, !model.contexts.contains(context) else { return }
+        guard let model = selected, model.loadable, !model.accepts(context) else { return }
         context = model.largestPreset
     }
 
@@ -342,7 +342,7 @@ final class AppStore: ObservableObject {
 
     func loadLast() {
         guard let path = Prefs.lastModel, let model = model(at: path) else { page = .models; return }
-        load(model, context: model.contexts.contains(Prefs.lastContext) ? Prefs.lastContext : nil)
+        load(model, context: model.accepts(Prefs.lastContext) ? Prefs.lastContext : nil)
     }
 
     func verify(_ model: LocalModel) async {

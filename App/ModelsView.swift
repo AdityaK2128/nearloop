@@ -102,6 +102,7 @@ private struct ModelDetail: View {
     @ObservedObject var server: ServerController
     @ObservedObject var bench = BenchmarkRunner.shared
     @State private var confirmDelete = false
+    @State private var customContext = ""
 
     var isLoaded: Bool { server.record?.modelPath == model.path }
     var relocating: Bool { store.relocations[model.path] != nil }
@@ -155,6 +156,13 @@ private struct ModelDetail: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize().disabled(server.running)
                 .help("Tokens per conversation. Larger contexts use more memory.")
+                TextField("Custom", text: $customContext)
+                    .textFieldStyle(.roundedBorder).frame(width: 90).disabled(server.running)
+                    .help("Any context: 200k, 200000 or 1m. Press Return to use it.")
+                    .onSubmit {
+                        guard let tokens = LocalModel.parseCustomContext(customContext), model.accepts(String(tokens)) else { return }
+                        store.context = String(tokens)
+                    }
                 Spacer(minLength: 0)
             }
             // A small context suits a short chat, not an agent: Claude Code alone sends about 20K tokens before

@@ -143,7 +143,7 @@ private struct ServerCard: View {
             if !server.running {
                 Button("Choose Model…") { store.page = .models }
                 if let model = suggestion {
-                    Button("Load Model") { store.load(model, context: model.contexts.contains(Prefs.lastContext) ? Prefs.lastContext : nil) }
+                    Button("Load Model") { store.load(model, context: model.accepts(Prefs.lastContext) ? Prefs.lastContext : nil) }
                         .buttonStyle(.borderedProminent)
                 }
             }

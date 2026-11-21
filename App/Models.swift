@@ -43,7 +43,27 @@ struct LocalModel: Identifiable, Hashable {
     /// "64k" → 65,536; "max" → the model's own limit.
     func contextTokens(_ value: String) -> Int? {
         if value == "max" { return nativeContext }
+        if let exact = Int(value) { return exact }   // a custom context, stored as a token count
         return Int(value.dropLast()).map { $0 * 1024 }
+    }
+
+    /// A preset, or a custom token count the model supports.
+    func accepts(_ context: String) -> Bool {
+        if contexts.contains(context) { return true }
+        guard let tokens = Int(context), tokens >= 4096 else { return false }
+        return tokens <= (nativeContext ?? 131072)
+    }
+
+    /// "200k", "200000", "1m" or "1.5m" → a token count (k = 1,000 here, as people type it), else nil.
+    static func parseCustomContext(_ text: String) -> Int? {
+        let t = text.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: ",", with: "")
+        if let n = Int(t) { return n }
+        guard let unit = t.last, let n = Double(t.dropLast()) else { return nil }
+        switch unit {
+        case "k": return Int(n * 1_000)
+        case "m": return Int(n * 1_000_000)
+        default: return nil
+        }
     }
 
     /// The largest preset context ("8k" … "128k"), the default when no other is chosen. "max" can be a
@@ -51,19 +71,20 @@ struct LocalModel: Identifiable, Hashable {
     var largestPreset: String { contexts.last { $0 != "max" } ?? contexts.last ?? "max" }
 
     func contextLabel(_ value: String) -> String {
+        if let exact = Int(value) { return exact.formatted() }
         guard value == "max" else { return value.uppercased() }
         guard let limit = nativeContext else { return "Maximum" }
         return (limit >= 1_048_576 ? "\(limit / 1_048_576)M" : "\(limit / 1024)K") + " (Max)"
     }
 }
 
-/// Classifies model folders and GGUF files the way Kapitsa 0.2.36 accepts them (the same types as 0.2.26), without loading weights.
+/// Classifies model folders and GGUF files the way Kapitsa 0.2.39 accepts them, without loading weights.
 enum ModelScanner {
     static let qwenTypes: Set<String> = ["qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen4_exp", "qwen4_exp_text"]
-    static let otherTypes: Set<String> = ["nemotron_h", "flint", "dory"]
-    static let otherClasses = ["NemotronH", "Dory", "Flint", "Clover"]
+    static let otherTypes: Set<String> = ["nemotron_h", "flint", "dory", "hy_v4_flash"]
+    static let otherClasses = ["NemotronH", "Dory", "Flint", "Clover", "HYV4Flash"]
     static let ggufArchitectures: Set<String> = ["qwen35", "qwen35moe", "flint"]
-    static let contexts: [(String, Int)] = [("8k", 8192), ("32k", 32768), ("64k", 65536), ("128k", 131072)]
+    static let contexts: [(String, Int)] = [("8k", 8192), ("32k", 32768), ("64k", 65536), ("128k", 131072), ("256k", 262144)]
     static let skipped: Set<String> = ["hf-cache", "kapitsa-runtime", "node_modules", "__pycache__", "prefix-cache", "huggingface"]
 
     static func identity(_ path: String) -> String {
