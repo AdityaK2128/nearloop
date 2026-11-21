@@ -235,7 +235,8 @@ struct AboutSettings: View {
         case source(EngineSource.Checkout, built: Bool)
     }
     private var kind: Kind {
-        if engine.isEmpty { return .bundled }
+        // A kapitsa inside an app (this one's or another copy's) changes only with that app, like the bundled one.
+        if engine.isEmpty || Kapitsa.insideApp(URL(fileURLWithPath: engine)) { return .bundled }
         let managed = EngineSource.managed
         if engine == managed.binary.path { return .source(managed, built: FileManager.default.isExecutableFile(atPath: engine)) }
         if let checkout = EngineSource.checkout(of: URL(fileURLWithPath: engine)) { return .source(checkout, built: true) }
@@ -307,12 +308,25 @@ struct AboutSettings: View {
         .onChange(of: selection) { _, chosen in
             if chosen == Self.other { choose() } else if chosen != engine { engine = chosen }
         }
-        .task(id: engine) { selection = engine; scan(); checkForUpdate() }
+        .task(id: engine) {
+            selection = engine; scan(); checkForUpdate()
+            // A build started before this pane was last closed is still running: show it, and check once it ends.
+            guard EngineSource.anyBuilding, !updating else { return }
+            updating = true
+            buildStep = "Building…"
+            while EngineSource.anyBuilding, !Task.isCancelled { try? await Task.sleep(for: .seconds(2)) }
+            if Task.isCancelled { return }
+            updating = false; buildStep = ""
+            version = await Task.detached { Kapitsa.version() }.value
+            checkForUpdate()
+        }
     }
 
     private var footer: String {
         if chosenMissing { return "\(short(engine)) is not an executable file; the bundled engine stands in until it is back." }
         switch kind {
+        case .bundled where !engine.isEmpty:
+            return "The kapitsa inside \(short(engine)). It changes only with that app, so there is nothing to update here."
         case .bundled:
             return "The engine that ships inside Nearloop. It changes only with the app. A Kapitsa installed with Homebrew, one you built yourself, or the latest commit of main built here takes its place for the server, downloads, imports, benchmarks and the coding agents, from the next model load on; a running model keeps the engine it started with."
         case .installed:
@@ -320,7 +334,7 @@ struct AboutSettings: View {
         case .source(let checkout, let built):
             return built
                 ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main and counts the commits this checkout is behind; Build pulls main and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
-                : "Build clones nace-ai/kapitsa into \(short(checkout.source.path)), compiles the commit shown above in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
+                : "Build clones nace-ai/kapitsa into \(short(checkout.source.path)), compiles the latest commit of main in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
         }
     }
 
@@ -452,6 +466,25 @@ struct AboutSettings: View {
         panel.showsHiddenFiles = true
         panel.message = "Choose a kapitsa executable"
         panel.directoryURL = URL(fileURLWithPath: installed.first?.deletingLastPathComponent().path ?? "/opt/homebrew/bin")
-        if panel.runModal() == .OK, let url = panel.url { engine = url.path } else { selection = engine }
+        if panel.runModal() == .OK, let url = panel.url { engine = enginePath(for: url) }
+        selection = engine
+    }
+
+    /// The path to keep for a file picked with Other…. The open panel resolves links, so Homebrew's
+    /// /opt/homebrew/bin/kapitsa arrives as its versioned Cellar folder, which the next upgrade deletes: a file
+    /// that is one of the installed engines keeps that engine's own path. The bundled copy is the default choice, and
+    /// this app's `kapitsa` command can't be the engine, since it runs the engine chosen here.
+    private func enginePath(for url: URL) -> String {
+        let real = url.resolvingSymlinksInPath().path
+        if Kapitsa.isCommand(url) {
+            let alert = NSAlert()
+            alert.messageText = "That is Nearloop’s own kapitsa command"
+            alert.informativeText = "It runs the engine chosen here, so it can’t be the engine itself. Choose the kapitsa it should run instead."
+            alert.runModal()
+            return engine
+        }
+        if let bundled = Kapitsa.bundled, bundled.resolvingSymlinksInPath().path == real { return "" }
+        if let match = installed.first(where: { $0.resolvingSymlinksInPath().path == real }) { return match.path }
+        return url.path
     }
 }

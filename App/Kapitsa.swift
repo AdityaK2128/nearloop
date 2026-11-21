@@ -105,9 +105,9 @@ enum Kapitsa {
     struct Failure: LocalizedError { let errorDescription: String? }
 
     /// The kapitsa chosen in Settings › About (one installed with Homebrew, or built by the user), as long as it is
-    /// still there; else the copy bundled in Contents/MacOS; else KAPITSA_BIN or an installed one (development builds).
+    /// usable; else the copy bundled in Contents/MacOS; else KAPITSA_BIN or an installed one (development builds).
     static var binary: URL? {
-        if let chosen = Prefs.engine, FileManager.default.isExecutableFile(atPath: chosen) { return URL(fileURLWithPath: chosen) }
+        if let chosen = chosenEngine { return chosen }
         if let bundled { return bundled }
         if let custom = ProcessInfo.processInfo.environment["KAPITSA_BIN"], FileManager.default.isExecutableFile(atPath: custom) {
             return URL(fileURLWithPath: custom)
@@ -117,6 +117,27 @@ enum Kapitsa {
 
     /// The copy bundled in Contents/MacOS, when this build has one.
     static var bundled: URL? { Bundle.main.url(forAuxiliaryExecutable: "kapitsa") }
+
+    /// The engine chosen in Settings › About while it can run: it exists, isn't being rebuilt this moment (a server
+    /// started then would run a half-linked file), and isn't this app's own `kapitsa` command, which runs the engine
+    /// chosen here and would start itself.
+    static var chosenEngine: URL? {
+        guard let chosen = Prefs.engine, FileManager.default.isExecutableFile(atPath: chosen) else { return nil }
+        let url = URL(fileURLWithPath: chosen)
+        if isCommand(url) || EngineSource.isBuilding(url) { return nil }
+        return url
+    }
+
+    /// This app's `kapitsa` command, by whatever path or link it is reached.
+    static func isCommand(_ url: URL) -> Bool {
+        url.resolvingSymlinksInPath().path == commandURL.resolvingSymlinksInPath().path
+    }
+
+    /// A kapitsa inside an app bundle (this Nearloop or another copy) changes only with that app: updating it in
+    /// place would break the app's signature.
+    static func insideApp(_ url: URL) -> Bool {
+        url.resolvingSymlinksInPath().pathComponents.contains { $0.hasSuffix(".app") }
+    }
 
     /// The kapitsa executables installed on this Mac: Homebrew's, /usr/local's and any on the login shell's PATH,
     /// one per real file, leaving out the bundled copy and the app's own `kapitsa` command.
@@ -347,7 +368,7 @@ enum Kapitsa {
     /// cannot, it changes only with the app.
     static var updatable: Bool {
         guard let binary else { return false }
-        return binary.resolvingSymlinksInPath() != bundled?.resolvingSymlinksInPath()
+        return !insideApp(binary)
     }
 
     /// What `kapitsa update --check` says: a newer release is out, this one is the latest, or it could not tell.
@@ -374,6 +395,7 @@ enum Kapitsa {
     /// environment() provides), Kapitsa's own download for a copy installed with install.sh. Minutes, not seconds.
     static func update() throws -> Output {
         guard let binary else { throw Failure(errorDescription: "Kapitsa engine not found.") }
+        guard updatable else { throw Failure(errorDescription: "This kapitsa is inside an app and changes only with it.") }
         return try runSync(binary.path, ["update"], env: environment(), timeout: 600)
     }
 
@@ -386,6 +408,15 @@ enum Kapitsa {
     }
 
     struct Output { let code: Int32; let output: String }
+
+    /// Stops every process below `pid`, deepest first.
+    private static func terminateDescendants(of pid: pid_t, depth: Int = 0) {
+        guard depth < 16, let out = try? runSync("/usr/bin/pgrep", ["-P", String(pid)], timeout: 5) else { return }
+        for child in out.output.split(whereSeparator: \.isNewline).compactMap({ pid_t($0.trimmingCharacters(in: .whitespaces)) }) {
+            terminateDescendants(of: child, depth: depth + 1)
+            kill(child, SIGTERM)
+        }
+    }
 
     @discardableResult
     static func runSync(_ executable: String, _ arguments: [String], env: [String: String]? = nil,
@@ -409,6 +440,8 @@ enum Kapitsa {
         let done = DispatchSemaphore(value: 0)
         reader.async { data = pipe.fileHandleForReading.readDataToEndOfFile(); done.signal() }
         if done.wait(timeout: deadline) == .timedOut || exited.wait(timeout: deadline) == .timedOut {
+            // Its children too: a build's make and compilers would otherwise keep running.
+            terminateDescendants(of: process.processIdentifier)
             process.terminate()
             throw Failure(errorDescription: "\(URL(fileURLWithPath: executable).lastPathComponent) \(arguments.first ?? "") timed out")
         }

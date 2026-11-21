@@ -1,13 +1,25 @@
 import Foundation
 
 /// A Kapitsa built from its source at the latest commit of `main`, for the people who compile their own rather
-/// than wait for a release (user, 19.11: "ultimul commit, nu ultimul build"). Nearloop keeps a clone of
+/// than wait for a release. Nearloop keeps a clone of
 /// nace-ai/kapitsa and builds the `kapitsa` and `systemone` targets in Release, as the project's CONTRIBUTING.md
 /// says; the binary stays in its build folder, where the CMakeCache.txt beside it tells Kapitsa itself that this is
-/// a source build. A clone of the user's own, picked with Choose…, is recognised the same way and updated the same
-/// way: `git pull`, then `cmake --build`.
+/// a source build. A clone of the user's own, picked with Other…, is recognised the same way; it is compared with
+/// nace-ai/kapitsa's main (not whatever its `origin` is) and moved forward only while it is on a clean `main`.
 enum EngineSource {
     static let repository = "https://github.com/nace-ai/kapitsa.git"
+
+    /// Build folders with a build under way. The engine there is being relinked, so `Kapitsa.binary` doesn't hand it
+    /// out meanwhile, and a second build of the same checkout is refused (the pane can be closed and reopened while
+    /// one runs).
+    private static let lock = NSLock()
+    private static var building: Set<String> = []
+    static func isBuilding(_ binary: URL) -> Bool {
+        let folder = binary.resolvingSymlinksInPath().deletingLastPathComponent().path
+        lock.lock(); defer { lock.unlock() }
+        return building.contains(folder)
+    }
+    static var anyBuilding: Bool { lock.lock(); defer { lock.unlock() }; return !building.isEmpty }
 
     /// A source checkout and the build folder inside it.
     struct Checkout: Equatable {
@@ -75,11 +87,16 @@ enum EngineSource {
     static func check(_ checkout: Checkout) -> Status {
         guard let git = which("git") else { return .unknown("git is not installed: run xcode-select --install") }
         do {
-            try step(git, ["-C", checkout.source.path, "fetch", "-q", "origin", "main"], timeout: 120)
+            let branch = try read(git, ["-C", checkout.source.path, "rev-parse", "--abbrev-ref", "HEAD"])
             let head = try read(git, ["-C", checkout.source.path, "rev-parse", "--short", "HEAD"])
-            let latest = try read(git, ["-C", checkout.source.path, "rev-parse", "--short", "origin/main"])
-            let when = age(try read(git, ["-C", checkout.source.path, "log", "-1", "--format=%cI", "origin/main"])).map { ", \($0)" } ?? ""
-            let behind = Int(try read(git, ["-C", checkout.source.path, "rev-list", "--count", "HEAD..origin/main"])) ?? 0
+            if branch != "main" {
+                return .unknown("On branch \(branch) (\(head)): Build updates a checkout of main only")
+            }
+            // nace-ai's main, whatever this clone's origin is (a fork, say).
+            try step(git, ["-C", checkout.source.path, "fetch", "-q", repository, "main"], timeout: 120)
+            let latest = try read(git, ["-C", checkout.source.path, "rev-parse", "--short", "FETCH_HEAD"])
+            let when = age(try read(git, ["-C", checkout.source.path, "log", "-1", "--format=%cI", "FETCH_HEAD"])).map { ", \($0)" } ?? ""
+            let behind = Int(try read(git, ["-C", checkout.source.path, "rev-list", "--count", "HEAD..FETCH_HEAD"])) ?? 0
             if behind == 0 { return .atLatest("At the latest commit on main (\(head)\(when))") }
             return .behind(behind, "\(behind) commit\(behind == 1 ? "" : "s") behind main (\(head) → \(latest)\(when))")
         } catch {
@@ -101,21 +118,37 @@ enum EngineSource {
                   let sha = json["sha"] as? String else { outcome = .unknown("GitHub gave no answer about main"); return }
             let date = ((json["commit"] as? [String: Any])?["committer"] as? [String: Any])?["date"] as? String
             let when = date.flatMap(age).map { ", \($0)" } ?? ""
-            outcome = .remote("Latest on main: \(sha.prefix(7))\(when) — not built yet")
+            outcome = .remote("Main is at \(sha.prefix(7))\(when) — not built yet")
         }.resume()
         _ = done.wait(timeout: .now() + 25)
         return outcome
     }
 
-    /// Clones the repository when the checkout is not there yet, pulls main, configures and builds `kapitsa` and
-    /// `systemone` in Release. The first build takes minutes; `progress` names the step under way.
+    /// Clones the repository when the checkout is not there yet, brings main up to nace-ai's, configures and builds
+    /// `kapitsa` and `systemone` in Release. The first build takes minutes; `progress` names the step under way.
     static func update(_ checkout: Checkout, progress: @escaping (String) -> Void) throws {
         guard let git = which("git") else { throw Kapitsa.Failure(errorDescription: "git is not installed: run xcode-select --install") }
         guard let cmake = which("cmake") else { throw Kapitsa.Failure(errorDescription: "CMake is not installed: brew install cmake") }
+        let key = checkout.binary.resolvingSymlinksInPath().deletingLastPathComponent().path
+        lock.lock()
+        let started = building.insert(key).inserted
+        lock.unlock()
+        guard started else { throw Kapitsa.Failure(errorDescription: "A build of this checkout is already running.") }
+        defer { lock.lock(); building.remove(key); lock.unlock() }
+
         let fm = FileManager.default
         if fm.fileExists(atPath: checkout.source.appendingPathComponent(".git").path) {
+            // Only a clean main moves: a branch of the user's own, or work in progress, stays as it is.
+            let branch = try read(git, ["-C", checkout.source.path, "rev-parse", "--abbrev-ref", "HEAD"])
+            guard branch == "main" else {
+                throw Kapitsa.Failure(errorDescription: "\(checkout.source.path) is on branch \(branch); switch it to main to update it here.")
+            }
+            guard try read(git, ["-C", checkout.source.path, "status", "--porcelain", "--untracked-files=no"]).isEmpty else {
+                throw Kapitsa.Failure(errorDescription: "\(checkout.source.path) has uncommitted changes; commit or stash them first.")
+            }
             progress("Pulling main…")
-            try step(git, ["-C", checkout.source.path, "pull", "-q", "--ff-only", "origin", "main"], timeout: 300)
+            try step(git, ["-C", checkout.source.path, "fetch", "-q", repository, "main"], timeout: 300)
+            try step(git, ["-C", checkout.source.path, "merge", "-q", "--ff-only", "FETCH_HEAD"], timeout: 120)
         } else {
             progress("Cloning nace-ai/kapitsa…")
             try fm.createDirectory(at: checkout.source.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -124,7 +157,10 @@ enum EngineSource {
         progress("Configuring (cmake)…")
         try step(cmake, ["-S", checkout.source.path, "-B", checkout.build.path, "-DCMAKE_BUILD_TYPE=Release"], timeout: 600)
         progress("Building kapitsa — minutes on the first build…")
-        try step(cmake, ["--build", checkout.build.path, "--target", "kapitsa", "systemone", "-j"], timeout: 3600)
+        // A bounded job count: plain `-j` lets Make start every compile at once, which can run a Mac with a model
+        // loaded out of memory. One job per core, and no more than about 1.5 GB of free memory each.
+        let jobs = max(1, min(ProcessInfo.processInfo.activeProcessorCount, Int(SystemMemory.availableGB() / 1.5)))
+        try step(cmake, ["--build", checkout.build.path, "--target", "kapitsa", "systemone", "-j", String(jobs)], timeout: 3600)
         guard fm.isExecutableFile(atPath: checkout.binary.path) else {
             throw Kapitsa.Failure(errorDescription: "The build finished but left no kapitsa in \(checkout.build.path).")
         }
