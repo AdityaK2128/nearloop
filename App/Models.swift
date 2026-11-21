@@ -215,7 +215,7 @@ enum ModelScanner {
             return row
         }
         if let type = config["model_type"] as? String, engineRuns(type) == false {
-            row.reason = "The Kapitsa engine in use doesn’t run \(type) models yet. A newer engine can: choose one in Settings › Engine, such as the latest commit built from source."
+            row.reason = "The Kapitsa engine in use doesn’t run \(type) models yet. A newer engine can: choose one in Settings › Engine, such as Kapitsa built from source."
             row.needsEngine = true
             return row
         }

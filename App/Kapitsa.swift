@@ -359,8 +359,16 @@ enum Kapitsa {
     }
 
     static func version() -> String {
-        guard let binary, let result = try? runSync(binary.path, ["--version"], env: environment(), timeout: 10) else { return "Not found" }
-        return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let binary else { return "Not found" }
+        return version(of: binary) ?? "Not found"
+    }
+
+    /// What one kapitsa executable says it is ("kapitsa 0.2.39 (d387c2d)"), or nil when it doesn't run.
+    static func version(of binary: URL) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: binary.path),
+              let result = try? runSync(binary.path, ["--version"], env: environment(), timeout: 10) else { return nil }
+        let text = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     /// Whether the engine in use can be updated in place: an installed copy can (`kapitsa update` runs Homebrew's

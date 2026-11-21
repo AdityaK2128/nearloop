@@ -246,6 +246,8 @@ struct EngineSettings: View {
     @State private var selection = ""
     @State private var version = "…"
     @State private var installed: [URL] = []
+    /// What each engine in the picker says it is, by path ("" for the bundled copy).
+    @State private var versions: [String: String] = [:]
     /// The last answer of `kapitsa update --check`, for an installed engine.
     @State private var check: Kapitsa.UpdateCheck?
     /// For an engine built from source: how far its checkout is behind main.
@@ -259,6 +261,18 @@ struct EngineSettings: View {
     private static let other = "__other__"
     private var home: String { FileManager.default.homeDirectoryForCurrentUser.path }
     private func short(_ path: String) -> String { path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path }
+
+    /// An engine by name: its version ("Kapitsa 0.2.39 (d387c2d)") and where it comes from.
+    private func name(_ path: String, from origin: String) -> String {
+        guard let version = versions[path] else { return "Kapitsa · \(origin)" }
+        return version.prefix(1).uppercased() + version.dropFirst() + " · " + origin
+    }
+    /// Where an installed engine comes from, in a word or its folder.
+    private func origin(_ path: String) -> String {
+        if path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/usr/local/Cellar/") || path == "/usr/local/bin/kapitsa" { return "Homebrew" }
+        if EngineSource.checkout(of: URL(fileURLWithPath: path)) != nil { return "Built from Source, " + short(path) }
+        return short(path)
+    }
 
     /// What kind of engine is chosen; the actions below the rows follow from it.
     private enum Kind: Equatable {
@@ -285,21 +299,22 @@ struct EngineSettings: View {
         Form {
             Section {
                 Picker("Engine", selection: $selection) {
-                    Text(Kapitsa.bundled == nil ? "Bundled (not in this build)" : "Bundled").tag("")
-                    ForEach(installed, id: \.path) { Text(short($0.path)).tag($0.path) }
+                    Text(Kapitsa.bundled == nil ? "Bundled (not in this build)" : name("", from: "Bundled")).tag("")
+                    ForEach(installed, id: \.path) { Text(name($0.path, from: origin($0.path))).tag($0.path) }
                     if !engine.isEmpty, engine != EngineSource.managed.binary.path, !installed.contains(where: { $0.path == engine }) {
-                        Text(short(engine)).tag(engine)
+                        Text(name(engine, from: origin(engine))).tag(engine)
                     }
-                    Text("Latest commit (built from source)").tag(EngineSource.managed.binary.path)
+                    let managed = EngineSource.managed.binary.path
+                    Text(FileManager.default.isExecutableFile(atPath: managed) ? name(managed, from: "Built from Source") : "Kapitsa main · Build from Source").tag(managed)
                     Divider()
                     Text("Other…").tag(Self.other)
                 }
                 // A source engine not built yet shows what it will be, not the bundled copy standing in for it.
                 if case .source(let checkout, built: false) = kind {
-                    LabeledContent("Engine Version", value: "Not built yet")
                     LabeledContent("Engine Path", value: checkout.binary.path)
                 } else {
-                    LabeledContent("Engine Version", value: version)
+                    // The picker names the chosen engine; the version shows only when another one stands in for it.
+                    if chosenMissing { LabeledContent("Engine in Use", value: version) }
                     LabeledContent("Engine Path", value: Kapitsa.binary?.path ?? "Not Found")
                 }
                 LabeledContent("Engine Update") {
@@ -344,7 +359,7 @@ struct EngineSettings: View {
             while EngineSource.anyBuilding, !Task.isCancelled { try? await Task.sleep(for: .seconds(2)) }
             if Task.isCancelled { return }
             updating = false; buildStep = ""
-            version = await Task.detached { Kapitsa.version() }.value
+            scan()
             checkForUpdate()
             await AppStore.shared.scan()
         }
@@ -356,7 +371,7 @@ struct EngineSettings: View {
         case .bundled where !engine.isEmpty:
             return "The kapitsa inside \(short(engine)). It changes only with that app, so there is nothing to update here."
         case .bundled:
-            return "The engine that ships inside Nearloop. It changes only with the app. A Kapitsa installed with Homebrew, one you built yourself, or the latest commit of main built here takes its place for the server, downloads, imports, benchmarks and the coding agents, from the next model load on; a running model keeps the engine it started with."
+            return "The engine that ships inside Nearloop. It changes only with the app. A Kapitsa installed with Homebrew, one you built yourself, or Kapitsa built here from source takes its place for the server, downloads, imports, benchmarks and the coding agents, from the next model load on; a running model keeps the engine it started with."
         case .installed:
             return "An installed Kapitsa, used in the bundled copy's place. Update runs its own kapitsa update: Homebrew's brew upgrade for a Homebrew install, Kapitsa's signed download from GitHub otherwise. A running model keeps the engine it started with until it is reloaded."
         case .source(let checkout, let built):
@@ -417,7 +432,15 @@ struct EngineSettings: View {
         Task.detached {
             Kapitsa.refreshShellPath()
             let found = Kapitsa.installed, current = Kapitsa.version()
-            await MainActor.run { installed = found; version = current }
+            // Every engine on offer is named by what it says it is, so two copies can be told apart.
+            var named: [String: String] = [:]
+            if let bundled = Kapitsa.bundled { named[""] = Kapitsa.version(of: bundled) }
+            let chosen = UserDefaults.standard.string(forKey: "enginePath") ?? ""
+            for path in found.map(\.path) + [chosen, EngineSource.managed.binary.path] where !path.isEmpty {
+                named[path] = Kapitsa.version(of: URL(fileURLWithPath: path))
+            }
+            let names = named
+            await MainActor.run { installed = found; version = current; versions = names }
         }
     }
 
@@ -462,7 +485,7 @@ struct EngineSettings: View {
                 outcome = "Update failed: \(error.localizedDescription)"
             }
             let current = Kapitsa.version()
-            await MainActor.run { updating = false; updateResult = outcome; version = current }
+            await MainActor.run { updating = false; updateResult = outcome; version = current; scan() }
             await AppStore.shared.scan()
         }
     }
@@ -482,7 +505,7 @@ struct EngineSettings: View {
             }
             let current = Kapitsa.version()
             await MainActor.run {
-                updating = false; buildStep = ""; version = current
+                updating = false; buildStep = ""; version = current; scan()
                 if let failure { updateResult = failure } else { checkForUpdate() }
             }
             await AppStore.shared.scan()
