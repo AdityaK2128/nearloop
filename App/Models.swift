@@ -100,8 +100,8 @@ struct LocalModel: Identifiable, Hashable {
 /// Classifies model folders and GGUF files the way the bundled Kapitsa (0.2.39) accepts them, without loading weights.
 enum ModelScanner {
     static let qwenTypes: Set<String> = ["qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen4_exp", "qwen4_exp_text"]
-    static let otherTypes: Set<String> = ["nemotron_h", "flint", "dory", "hy_v4_flash"]
-    static let otherClasses = ["NemotronH", "Dory", "Flint", "Clover", "HYV4Flash"]
+    static let otherTypes: Set<String> = ["nemotron_h", "flint", "dory", "hy_v4_flash", "inkling2_loop"]
+    static let otherClasses = ["NemotronH", "Dory", "Flint", "Clover", "HYV4Flash", "Inkling2Loop"]
     static let ggufArchitectures: Set<String> = ["qwen35", "qwen35moe", "flint"]
     static let contexts: [(String, Int)] = [("8k", 8192), ("32k", 32768), ("64k", 65536), ("128k", 131072), ("256k", 262144)]
     static let skipped: Set<String> = ["hf-cache", "kapitsa-runtime", "node_modules", "__pycache__", "prefix-cache", "huggingface"]
@@ -184,6 +184,10 @@ enum ModelScanner {
             row.reason = "Architecture not supported by Kapitsa."
             return row
         }
+        if let type = config["model_type"] as? String, engineRuns(type) == false {
+            row.reason = "The Kapitsa engine in use doesn’t run \(type) models yet. A newer engine may: Settings › About › Engine."
+            return row
+        }
         let index = readJSON(url.appendingPathComponent("model.safetensors.index.json"))
         let shards = Set(((index?["weight_map"] as? [String: String]) ?? [:]).values)
         let missing = shards.filter { !fm.fileExists(atPath: url.appendingPathComponent($0).path) }.sorted()
@@ -204,8 +208,9 @@ enum ModelScanner {
             row.reason = "Verified on this Mac" + (entry.date.map { " · \($0)" } ?? "")
         }
         let text = (config["text_config"] as? [String: Any]) ?? config
-        // Kapitsa assumes 128K when a config states no limit.
-        let native = (text["max_position_embeddings"] as? Int) ?? 131072
+        // The limit the config states (`model_max_length` where it has no `max_position_embeddings`); Kapitsa assumes
+        // 128K when it states none.
+        let native = (text["max_position_embeddings"] as? Int) ?? (text["model_max_length"] as? Int) ?? 131072
         row.nativeContext = native
         row.kvBytesPerToken = kvBytesPerToken(text)
         // "Max" only when it is more than the largest preset; a 128K model would otherwise list 128K twice.
@@ -240,12 +245,38 @@ enum ModelScanner {
             cached = layers / interval
         } else if let pattern = text["hybrid_override_pattern"] as? String {
             cached = pattern.filter { $0 == "*" }.count
+        } else {
+            // Layers that attend only within a sliding window (`local_layer_ids`) keep a fixed-size cache, not one
+            // per token. A looped model (`loop_config`) runs its core layers `num_passes` times, each pass with a
+            // cache of its own. A config with neither caches every layer once.
+            let local = Set((text["local_layer_ids"] as? [Int]) ?? [])
+            let loop = (text["loop_config"] as? [String: Any]) ?? [:]
+            let start = (loop["core_start"] as? Int) ?? 0, end = (loop["core_end"] as? Int) ?? 0
+            let passes = max(1, (loop["num_passes"] as? Int) ?? 1)
+            cached = (0..<layers).filter { !local.contains($0) }.reduce(0) { $0 + ($1 >= start && $1 < end ? passes : 1) }
         }
         let attentionHeads = (text["num_attention_heads"] as? Int) ?? 0
         guard let heads = (text["num_key_value_heads"] as? Int) ?? (attentionHeads > 0 ? attentionHeads : nil) else { return nil }
         let headDim = (text["head_dim"] as? Int) ?? (attentionHeads > 0 ? ((text["hidden_size"] as? Int) ?? 0) / attentionHeads : 0)
         return product([2, cached, heads, headDim, 2])
     }
+
+    /// Whether the engine in use runs a model type: Kapitsa recognises a config by its literal `model_type`, so an
+    /// engine whose binary doesn't contain the name can't load it (a model added to Kapitsa after the engine was
+    /// released). nil when there is no engine to ask. Each engine file is mapped, not read, and kept per file and date.
+    static func engineRuns(_ type: String) -> Bool? {
+        guard !type.isEmpty, let engine = Kapitsa.binary?.resolvingSymlinksInPath() else { return nil }
+        let date = (try? engine.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        let key = engine.path + "|" + String(date?.timeIntervalSince1970 ?? 0)
+        engineLock.lock(); defer { engineLock.unlock() }
+        if engineFile?.key != key {
+            guard let data = try? Data(contentsOf: engine, options: .alwaysMapped) else { return nil }
+            engineFile = (key, data)
+        }
+        return engineFile?.data.range(of: Data(type.utf8)) != nil
+    }
+    private static let engineLock = NSLock()
+    nonisolated(unsafe) private static var engineFile: (key: String, data: Data)?
 
     static func family(_ config: [String: Any]) -> String? {
         let type = config["model_type"] as? String ?? ""

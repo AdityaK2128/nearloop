@@ -308,6 +308,8 @@ struct AboutSettings: View {
         .onChange(of: selection) { _, chosen in
             if chosen == Self.other { choose() } else if chosen != engine { engine = chosen }
         }
+        // The Library lists what the engine in use runs, so it is read again when the engine changes.
+        .onChange(of: engine) { _, _ in Task { await AppStore.shared.scan() } }
         .task(id: engine) {
             selection = engine; scan(); checkForUpdate()
             // A build started before this pane was last closed is still running: show it, and check once it ends.
@@ -319,6 +321,7 @@ struct AboutSettings: View {
             updating = false; buildStep = ""
             version = await Task.detached { Kapitsa.version() }.value
             checkForUpdate()
+            await AppStore.shared.scan()
         }
     }
 
@@ -435,6 +438,7 @@ struct AboutSettings: View {
             }
             let current = Kapitsa.version()
             await MainActor.run { updating = false; updateResult = outcome; version = current }
+            await AppStore.shared.scan()
         }
     }
 
@@ -456,6 +460,7 @@ struct AboutSettings: View {
                 updating = false; buildStep = ""; version = current
                 if let failure { updateResult = failure } else { checkForUpdate() }
             }
+            await AppStore.shared.scan()
         }
     }
 
