@@ -124,6 +124,12 @@ private struct ModelDetail: View {
                     if isLoaded { Badge(text: "Loaded", color: .green, symbol: "bolt.fill") }
                 }
                 Text(model.reason).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if model.needsEngine {
+                    Button("Choose Engine…") {
+                        UserDefaults.standard.set(SettingsPage.Category.engine.rawValue, forKey: "settingsCategory")
+                        store.page = .settings
+                    }
+                }
             }
             if model.loadable { loadCard; performanceCard }
             else if model.status == .importable { convertCard }

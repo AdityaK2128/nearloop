@@ -5,7 +5,7 @@ import SwiftUI
 /// Settings, as a page of the main window: categories on the left, the chosen one's form on the right.
 struct SettingsPage: View {
     enum Category: String, CaseIterable, Identifiable {
-        case general, shortcut, chat, server, memory, storage, about
+        case general, shortcut, chat, server, engine, memory, storage, about
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -13,6 +13,7 @@ struct SettingsPage: View {
             case .shortcut: return "Quick Chat"
             case .chat: return "Web Search"
             case .server: return "Server"
+            case .engine: return "Engine"
             case .memory: return "Memory"
             case .storage: return "Storage"
             case .about: return "About"
@@ -24,6 +25,7 @@ struct SettingsPage: View {
             case .shortcut: return "command"
             case .chat: return "globe"
             case .server: return "server.rack"
+            case .engine: return "cpu"
             case .memory: return "memorychip"
             case .storage: return "externaldrive"
             case .about: return "info.circle"
@@ -38,8 +40,8 @@ struct SettingsPage: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Settings").font(.system(size: 28, weight: .bold))
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
+                // Every tab stays in sight: the row wraps onto a second line when the window is too narrow.
+                FlowLayout(spacing: 6) {
                         ForEach(Category.allCases) { item in
                             let selected = category == item.rawValue
                             Button { category = item.rawValue } label: {
@@ -51,11 +53,10 @@ struct SettingsPage: View {
                                     .contentShape(Capsule())
                             }.buttonStyle(.plain)
                         }
-                    }
-                    // The horizontal scroll view stops redrawing its row after the first change of tab (macOS 27),
-                    // so the highlight stayed on one tab while the pages changed; a row per tab is drawn fresh.
-                    .id(category)
                 }
+                // The row stops redrawing after the first change of tab (macOS 27), so the highlight stayed
+                // on one tab while the pages changed; a row per tab is drawn fresh.
+                .id(category)
             }
             // Lined up with the forms' rows, which sit 20 points inside their own width.
             .padding(.horizontal, 20)
@@ -68,6 +69,7 @@ struct SettingsPage: View {
                 case .shortcut: QuickChatSettings()
                 case .chat: ChatSettings()
                 case .server: ServerSettings()
+                case .engine: EngineSettings()
                 case .memory: MemorySettings()
                 case .storage: StorageSettings()
                 case .about: AboutSettings()
@@ -210,7 +212,35 @@ struct StorageSettings: View {
     }
 }
 
+/// Nearloop's version and credits.
 struct AboutSettings: View {
+    @State private var engine = "…"
+
+    var body: some View {
+        Form {
+            LabeledContent("Nearloop", value: "\(Updater.currentVersion) (\(Updater.currentBuild))")
+            LabeledContent("Engine") {
+                HStack(spacing: 8) {
+                    Text(engine).foregroundStyle(.secondary)
+                    Button("Change…") { UserDefaults.standard.set(SettingsPage.Category.engine.rawValue, forKey: "settingsCategory") }
+                        .controlSize(.small)
+                }
+            }
+            Text("Powered by Kapitsa, the open-source inference engine for Apple silicon by Nace AI, licensed under the Apache License 2.0. License and notices are included in the app bundle. This app is independent of the Kapitsa project. Chat’s web search follows the design of oMLX’s, also under the Apache License 2.0.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 16) {
+                Link("Kapitsa on GitHub", destination: URL(string: "https://github.com/nace-ai/kapitsa")!)
+                Link("Published Benchmarks", destination: URL(string: "https://github.com/nace-ai/kapitsa#benchmarks")!)
+                Link("Nearloop on GitHub", destination: Updater.releasesPage.deletingLastPathComponent())
+            }.font(.callout)
+        }
+        .formStyle(.grouped)
+        .task { engine = await Task.detached { Kapitsa.version() }.value }
+    }
+}
+
+/// The Kapitsa engine the app runs: the bundled one, an installed one, or the latest commit built from source.
+struct EngineSettings: View {
     @AppStorage("enginePath") private var engine = ""
     /// The picker's own selection: the engine, or the "Other…" entry while the file dialog is up.
     @State private var selection = ""
@@ -253,7 +283,6 @@ struct AboutSettings: View {
 
     var body: some View {
         Form {
-            LabeledContent("Nearloop", value: "\(Updater.currentVersion) (\(Updater.currentBuild))")
             Section {
                 Picker("Engine", selection: $selection) {
                     Text(Kapitsa.bundled == nil ? "Bundled (not in this build)" : "Bundled").tag("")
@@ -298,13 +327,6 @@ struct AboutSettings: View {
             } footer: {
                 Text(footer).foregroundStyle(chosenMissing ? .orange : .secondary)
             }
-            Text("Powered by Kapitsa, the open-source inference engine for Apple silicon by Nace AI, licensed under the Apache License 2.0. License and notices are included in the app bundle. This app is independent of the Kapitsa project. Chat’s web search follows the design of oMLX’s, also under the Apache License 2.0.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 16) {
-                Link("Kapitsa on GitHub", destination: URL(string: "https://github.com/nace-ai/kapitsa")!)
-                Link("Published Benchmarks", destination: URL(string: "https://github.com/nace-ai/kapitsa#benchmarks")!)
-                Link("Nearloop on GitHub", destination: Updater.releasesPage.deletingLastPathComponent())
-            }.font(.callout)
         }
         .formStyle(.grouped)
         .onAppear { selection = engine }
@@ -496,3 +518,4 @@ struct AboutSettings: View {
         return url.path
     }
 }
+

@@ -54,7 +54,7 @@ enum Prefs {
     static var shareOnNetwork: Bool { defaults.bool(forKey: "shareOnNetwork") }
     static var terminal: String { defaults.string(forKey: "terminalApp") ?? "terminal" }
     static var runtimeFolder: String? { defaults.string(forKey: "runtimeFolder").flatMap { $0.isEmpty ? nil : $0 } }
-    /// The kapitsa executable chosen in Settings › About; nil runs the copy bundled in the app.
+    /// The kapitsa executable chosen in Settings › Engine; nil runs the copy bundled in the app.
     static var engine: String? { defaults.string(forKey: "enginePath").flatMap { $0.isEmpty ? nil : $0 } }
     static var libraries: [String] {
         get { defaults.stringArray(forKey: "libraryFolders") ?? [] }
@@ -104,7 +104,7 @@ enum Prefs {
 enum Kapitsa {
     struct Failure: LocalizedError { let errorDescription: String? }
 
-    /// The kapitsa chosen in Settings › About (one installed with Homebrew, or built by the user), as long as it is
+    /// The kapitsa chosen in Settings › Engine (one installed with Homebrew, or built by the user), as long as it is
     /// usable; else the copy bundled in Contents/MacOS; else KAPITSA_BIN or an installed one (development builds).
     static var binary: URL? {
         if let chosen = chosenEngine { return chosen }
@@ -118,7 +118,7 @@ enum Kapitsa {
     /// The copy bundled in Contents/MacOS, when this build has one.
     static var bundled: URL? { Bundle.main.url(forAuxiliaryExecutable: "kapitsa") }
 
-    /// The engine chosen in Settings › About while it can run: it exists, isn't being rebuilt this moment (a server
+    /// The engine chosen in Settings › Engine while it can run: it exists, isn't being rebuilt this moment (a server
     /// started then would run a half-linked file), and isn't this app's own `kapitsa` command, which runs the engine
     /// chosen here and would start itself.
     static var chosenEngine: URL? {

@@ -19,6 +19,8 @@ struct LocalModel: Identifiable, Hashable {
     var status = ModelStatus.unsupported
     var reason = ""
     var drafter = ""
+    /// A model Kapitsa supports whose type the engine in use doesn't run yet: another engine (Settings › Engine) can.
+    var needsEngine = false
     /// The folder keeps the model's vision tower (vision_config in config.json), so the chat can take images.
     var vision = false
     var nativeContext: Int?
@@ -29,10 +31,12 @@ struct LocalModel: Identifiable, Hashable {
     var drafterSignature: [Int]?
 
     var loadable: Bool { status == .verified || status == .candidate }
-    var available: Bool { loadable || status == .importable }
+    /// Listed under Compatible: loadable, convertible, or loadable with another engine.
+    var available: Bool { loadable || status == .importable || needsEngine }
     var verified: Bool { status == .verified }
     var sizeLabel: String { String(format: "%.2f GB", Double(size) / 1e9) }
     var statusLabel: String {
+        if needsEngine { return "Needs Newer Engine" }
         switch status {
         case .verified: return "Verified"
         case .candidate: return "Compatible"
@@ -211,7 +215,8 @@ enum ModelScanner {
             return row
         }
         if let type = config["model_type"] as? String, engineRuns(type) == false {
-            row.reason = "The Kapitsa engine in use doesn’t run \(type) models yet. A newer engine may: Settings › About › Engine."
+            row.reason = "The Kapitsa engine in use doesn’t run \(type) models yet. A newer engine can: choose one in Settings › Engine, such as the latest commit built from source."
+            row.needsEngine = true
             return row
         }
         let index = readJSON(url.appendingPathComponent("model.safetensors.index.json"))
