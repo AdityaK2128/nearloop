@@ -52,6 +52,9 @@ struct SettingsPage: View {
                             }.buttonStyle(.plain)
                         }
                     }
+                    // The horizontal scroll view stops redrawing its row after the first change of tab (macOS 27),
+                    // so the highlight stayed on one tab while the pages changed; a row per tab is drawn fresh.
+                    .id(category)
                 }
             }
             // Lined up with the forms' rows, which sit 20 points inside their own width.
