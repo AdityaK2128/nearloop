@@ -103,6 +103,7 @@ private struct ModelDetail: View {
     @ObservedObject var bench = BenchmarkRunner.shared
     @State private var confirmDelete = false
     @State private var customContext = ""
+    @State private var customProblem: String?
 
     var isLoaded: Bool { server.record?.modelPath == model.path }
     var relocating: Bool { store.relocations[model.path] != nil }
@@ -152,18 +153,21 @@ private struct ModelDetail: View {
             HStack(spacing: 14) {
                 Text("Context").foregroundStyle(.secondary)
                 Picker("Context", selection: $store.context) {
-                    ForEach(model.contexts, id: \.self) { Text(model.contextLabel($0).replacingOccurrences(of: " (Max)", with: "")).tag($0) }
+                    ForEach(model.contextOptions(including: store.context), id: \.self) { Text(model.contextLabel($0).replacingOccurrences(of: " (Max)", with: "")).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize().disabled(server.running)
                 .help("Tokens per conversation. Larger contexts use more memory.")
                 TextField("Custom", text: $customContext)
                     .textFieldStyle(.roundedBorder).frame(width: 90).disabled(server.running)
-                    .help("Any context: 200k, 200000 or 1m. Press Return to use it.")
-                    .onSubmit {
-                        guard let tokens = LocalModel.parseCustomContext(customContext), model.accepts(String(tokens)) else { return }
-                        store.context = String(tokens)
-                    }
+                    .help(model.nativeContext != nil ? "Any context from \(shortTokens(LocalModel.smallestCustom)) to \(model.contextLabel("max").replacingOccurrences(of: " (Max)", with: "")): 200k, 204800 or 1m. Press Return to use it."
+                          : "This model doesn’t state its context limit, so only the sizes shown can be used.")
+                    .onSubmit { useCustomContext() }
+                    .onChange(of: customContext) { _, _ in customProblem = nil }
                 Spacer(minLength: 0)
+            }
+            if let customProblem {
+                Label(customProblem, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // A small context suits a short chat, not an agent: Claude Code alone sends about 20K tokens before
             // anything is typed. Suggest the size agents need when the model has it and it fits in memory.
@@ -209,12 +213,34 @@ private struct ModelDetail: View {
         }.card()
     }
 
+    /// Uses the size typed in the Custom box, or says why it can't.
+    private func useCustomContext() {
+        guard !customContext.trimmingCharacters(in: .whitespaces).isEmpty else { customProblem = nil; return }
+        guard let limit = model.nativeContext else {
+            customProblem = "\(model.name) doesn’t state its context limit, so only the sizes shown can be used."
+            return
+        }
+        let largest = model.contextLabel("max").replacingOccurrences(of: " (Max)", with: "")
+        guard let tokens = LocalModel.parseCustomContext(customContext) else {
+            customProblem = "Enter a size such as 200k, 204800 or 1m."
+            return
+        }
+        guard let context = model.customContext(tokens) else {
+            customProblem = tokens > limit ? "\(model.name) handles at most \(largest) (\(limit.formatted()) tokens)."
+                                           : "Use at least \(shortTokens(LocalModel.smallestCustom)) tokens."
+            return
+        }
+        store.context = context
+        customContext = ""
+        customProblem = nil
+    }
+
     /// The estimate for every context option, so the cost of a larger one is visible before loading.
     @ViewBuilder private var contextEstimates: some View {
         if let kv = SystemMemory.kvBytesPerToken(model) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 14) {
-                    ForEach(model.contexts, id: \.self) { context in
+                    ForEach(model.contextOptions(including: store.context), id: \.self) { context in
                         if let tokens = model.contextTokens(context), let need = SystemMemory.estimatedNeedGB(model, tokens: tokens) {
                             let fit = SystemMemory.fit(needGB: need)
                             Text(model.contextLabel(context).replacingOccurrences(of: " (Max)", with: "") + String(format: "  %.1f GB", need))

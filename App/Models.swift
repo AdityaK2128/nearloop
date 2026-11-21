@@ -40,45 +40,64 @@ struct LocalModel: Identifiable, Hashable {
         case .unsupported: return "Unsupported"
         }
     }
-    /// "64k" → 65,536; "max" → the model's own limit.
+    /// "64k" → 65,536; "max" → the model's own limit; "200000" (a custom context) → itself.
     func contextTokens(_ value: String) -> Int? {
         if value == "max" { return nativeContext }
-        if let exact = Int(value) { return exact }   // a custom context, stored as a token count
+        if let exact = Int(value) { return exact }
         return Int(value.dropLast()).map { $0 * 1024 }
     }
 
-    /// A preset, or a custom token count the model supports.
+    /// A preset, or a custom token count within the model's own limit (only when that limit is known).
     func accepts(_ context: String) -> Bool {
         if contexts.contains(context) { return true }
-        guard let tokens = Int(context), tokens >= 4096 else { return false }
-        return tokens <= (nativeContext ?? 131072)
+        guard let limit = nativeContext, let tokens = Int(context) else { return false }
+        return tokens >= Self.smallestCustom && tokens <= limit
     }
 
-    /// "200k", "200000", "1m" or "1.5m" → a token count (k = 1,000 here, as people type it), else nil.
+    static let smallestCustom = 4096
+
+    /// "200k", "200000", "1m" or "1.5m" → a token count, else nil. k and m are 1,024 and 1,048,576, as in the
+    /// presets and Kapitsa's own `--context`, so "128k" here is the 128K preset.
     static func parseCustomContext(_ text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: ",", with: "")
         if let n = Int(t) { return n }
-        guard let unit = t.last, let n = Double(t.dropLast()) else { return nil }
+        guard let unit = t.last, let n = Double(t.dropLast()), n > 0 else { return nil }
         switch unit {
-        case "k": return Int(n * 1_000)
-        case "m": return Int(n * 1_000_000)
+        case "k": return Int(n * 1024)
+        case "m": return Int(n * 1_048_576)
         default: return nil
         }
     }
 
-    /// The largest preset context ("8k" … "128k"), the default when no other is chosen. "max" can be a
-    /// million tokens, so it is only the answer for a model smaller than every preset.
-    var largestPreset: String { contexts.last { $0 != "max" } ?? contexts.last ?? "max" }
+    /// The context value for a typed token count: the preset (or "max") of that size when there is one, the
+    /// count itself when the model accepts it, else nil.
+    func customContext(_ tokens: Int) -> String? {
+        if let preset = contexts.first(where: { contextTokens($0) == tokens }) { return preset }
+        return accepts(String(tokens)) ? String(tokens) : nil
+    }
+
+    /// The context options to show: the presets, plus the chosen custom size in its place among them.
+    func contextOptions(including chosen: String) -> [String] {
+        guard !contexts.contains(chosen), accepts(chosen) else { return contexts }
+        return (contexts + [chosen]).sorted { (contextTokens($0) ?? .max) < (contextTokens($1) ?? .max) }
+    }
+
+    /// The default when no other context is chosen: the largest preset up to 128K. Larger ones (256K, "max",
+    /// which can be a million tokens) take far more memory, so they are chosen on purpose; "max" is the answer
+    /// only for a model smaller than every preset.
+    var largestPreset: String {
+        contexts.last { $0 != "max" && (contextTokens($0) ?? 0) <= 131_072 } ?? contexts.last ?? "max"
+    }
 
     func contextLabel(_ value: String) -> String {
-        if let exact = Int(value) { return exact.formatted() }
+        if let exact = Int(value) { return exact % 1_048_576 == 0 ? "\(exact / 1_048_576)M" : shortTokens(exact) }
         guard value == "max" else { return value.uppercased() }
         guard let limit = nativeContext else { return "Maximum" }
         return (limit >= 1_048_576 ? "\(limit / 1_048_576)M" : "\(limit / 1024)K") + " (Max)"
     }
 }
 
-/// Classifies model folders and GGUF files the way Kapitsa 0.2.39 accepts them, without loading weights.
+/// Classifies model folders and GGUF files the way the bundled Kapitsa (0.2.39) accepts them, without loading weights.
 enum ModelScanner {
     static let qwenTypes: Set<String> = ["qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen4_exp", "qwen4_exp_text"]
     static let otherTypes: Set<String> = ["nemotron_h", "flint", "dory", "hy_v4_flash"]
