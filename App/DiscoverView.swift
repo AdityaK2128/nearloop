@@ -129,10 +129,16 @@ private struct HuggingFaceSection: View {
     /// The Hub only sorts descending, so ascending turns the page it returns around: the same 50 results, smallest first.
     @State private var ascending = false
 
+    /// The search the results belong to: a later one (a new sort chosen while a search runs) replaces an earlier one
+    /// whatever order they finish in.
+    @State private var latest = 0
+
     var shown: [HuggingFace.Model] {
-        var rows = results.filter { !onlyCompatible || $0.likelyCompatible }
-        if sort == .size { rows.sort { ($0.estimatedBytes ?? -1) > ($1.estimatedBytes ?? -1) } }
-        return ascending ? rows.reversed() : rows
+        let rows = results.filter { !onlyCompatible || $0.likelyCompatible }
+        guard sort == .size else { return ascending ? rows.reversed() : rows }
+        // Rows with no size estimate go last either way.
+        let sized = rows.filter { $0.estimatedBytes != nil }.sorted { $0.estimatedBytes! > $1.estimatedBytes! }
+        return (ascending ? sized.reversed() : sized) + rows.filter { $0.estimatedBytes == nil }
     }
 
     var body: some View {
@@ -172,10 +178,19 @@ private struct HuggingFaceSection: View {
     func search() {
         searching = true
         error = ""
+        latest += 1
+        let id = latest, sort = sort
         Task {
             // A pasted model address or org/name searches for that repository.
             let text = HuggingFace.repositoryID(query) ?? query
-            do { results = try await HuggingFace.search(text, sort: sort) } catch { self.error = error.localizedDescription }
+            do {
+                let found = try await HuggingFace.search(text, sort: sort)
+                guard id == latest else { return }
+                results = found
+            } catch {
+                guard id == latest else { return }
+                self.error = error.localizedDescription
+            }
             searching = false
         }
     }

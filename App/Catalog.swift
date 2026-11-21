@@ -201,7 +201,8 @@ enum HuggingFace {
             config?.quantization?.bits ?? tags?.lazy.compactMap { $0.hasSuffix("-bit") ? Int($0.dropLast(4)) : nil }.first
         }
         var groupSize: Int? { config?.quantization?.groupSize }
-        /// The weights' size from the Hub's parameter counts: quantized weights take `bits` per parameter, the rest
+        /// The weights' size from the Hub's parameter counts: quantized weights take `bits` per parameter plus their
+        /// groups' scales and biases, the rest
         /// their own width. Within a few percent of the files; `size(_:)` reads the exact figure. Nil when the
         /// counts or the bits are unknown, rather than a guess.
         var estimatedBytes: Int64? {
@@ -211,7 +212,12 @@ enum HuggingFace {
                 switch type {
                 case "U32", "I32":
                     guard let bits else { return nil }
-                    bytes += Double(count) * Double(bits) / 8
+                    // Each group of `group_size` weights also stores a 16-bit scale and bias: 32 / group_size bits
+                    // more per weight (half a bit at group 64), about a tenth of a 4-bit model. The listing's config
+                    // carries only the bits, so MLX's default group of 64 stands in for the size it leaves out.
+                    let group = groupSize ?? 64
+                    let overhead = group > 0 ? 32 / Double(group) : 0
+                    bytes += Double(count) * (Double(bits) + overhead) / 8
                 case "BF16", "F16", "I16", "U16": bytes += Double(count) * 2
                 case "F64", "I64", "U64": bytes += Double(count) * 8
                 case "U8", "I8", "BOOL", "F8_E4M3", "F8_E5M2": bytes += Double(count)
