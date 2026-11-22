@@ -476,8 +476,9 @@ struct EngineSettings: View {
     private func update() {
         updating = true
         updateResult = nil
-        let before = version
         Task.detached {
+            // The version as it is now, not as the pane last read it: the engine may have changed underneath.
+            let before = Kapitsa.version()
             var outcome: String
             do {
                 let result = try Kapitsa.update()
