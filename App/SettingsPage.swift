@@ -373,7 +373,7 @@ struct EngineSettings: View {
         case .bundled:
             return "The engine that ships inside Nearloop. It changes only with the app. A Kapitsa installed with Homebrew, one you built yourself, or Kapitsa built here from source takes its place for the server, downloads, imports, benchmarks and the coding agents, from the next model load on; a running model keeps the engine it started with."
         case .installed:
-            return "An installed Kapitsa, used in the bundled copy's place. Update runs its own kapitsa update: Homebrew's brew upgrade for a Homebrew install, Kapitsa's signed download from GitHub otherwise. A running model keeps the engine it started with until it is reloaded."
+            return "An installed Kapitsa, used in the bundled copy's place. Update runs brew upgrade for a Homebrew install and kapitsa update (its signed download from GitHub) otherwise. A running model keeps the engine it started with until it is reloaded."
         case .source(let checkout, let built):
             return built
                 ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main and counts the commits this checkout is behind; Build pulls main and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
@@ -383,7 +383,7 @@ struct EngineSettings: View {
 
     /// The Engine Update row, in a few words: what the check said, or how the update went.
     private var updateStatus: String {
-        if updating { return buildStep.isEmpty ? "Running kapitsa update…" : buildStep }
+        if updating { return buildStep.isEmpty ? "Updating the engine…" : buildStep }
         if let updateResult { return updateResult }
         switch kind {
         case .bundled: return Kapitsa.binary == nil ? "No engine" : "Updates with the app"
@@ -471,21 +471,24 @@ struct EngineSettings: View {
         }
     }
 
-    /// Runs `kapitsa update` for an installed engine and reads the version again.
+    /// Updates an installed engine (Kapitsa.update) and reads the version again: the outcome names the version it
+    /// went to, or says it was the latest already; a failure keeps the last line the updater printed.
     private func update() {
         updating = true
         updateResult = nil
+        let before = version
         Task.detached {
-            let outcome: String
+            var outcome: String
             do {
                 let result = try Kapitsa.update()
                 let last = result.output.split(whereSeparator: \.isNewline).last.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
-                outcome = result.code == 0 ? (last.isEmpty ? "Updated" : last) : "Update failed (exit \(result.code)): \(last)"
+                outcome = result.code == 0 ? "" : "Update failed (exit \(result.code)): \(last)"
             } catch {
                 outcome = "Update failed: \(error.localizedDescription)"
             }
             let current = Kapitsa.version()
-            await MainActor.run { updating = false; updateResult = outcome; version = current; scan() }
+            let result = outcome.isEmpty ? (current == before ? "Already the latest: \(current)" : "Updated to \(current)") : outcome
+            await MainActor.run { updating = false; updateResult = result; version = current; scan() }
             await AppStore.shared.scan()
         }
     }

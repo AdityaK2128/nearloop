@@ -391,9 +391,8 @@ enum Kapitsa {
         return text.isEmpty ? nil : text
     }
 
-    /// Whether the engine in use can be updated in place: an installed copy can (`kapitsa update` runs Homebrew's
-    /// `brew upgrade` for a Homebrew install and Kapitsa's own updater otherwise); the copy bundled in the signed app
-    /// cannot, it changes only with the app.
+    /// Whether the engine in use can be updated in place: an installed copy can (`brew upgrade` for a Homebrew install,
+    /// Kapitsa's own updater otherwise); the copy bundled in the signed app cannot, it changes only with the app.
     static var updatable: Bool {
         guard let binary else { return false }
         return !insideApp(binary)
@@ -419,11 +418,45 @@ enum Kapitsa {
         }
     }
 
-    /// Runs `kapitsa update`: Homebrew's `brew upgrade` for a Homebrew install (it needs the login shell's PATH, which
-    /// environment() provides), Kapitsa's own download for a copy installed with install.sh. Minutes, not seconds.
+    /// A Kapitsa that Homebrew installed: its binary lives in <prefix>/Cellar/kapitsa/<version>/bin/kapitsa, and the brew
+    /// beside that Cellar updates it. The formula is homebrew/core's `kapitsa` or the tap's `nace-ai/tap/kapitsa`
+    /// (INSTALL_RECEIPT.json names the tap), and a `--HEAD` install (version folder HEAD-<commit>) follows main.
+    struct Homebrew: Equatable {
+        let brew: String
+        let formula: String
+        let head: Bool
+        var command: String { "brew upgrade " + (head ? "--fetch-HEAD " : "") + formula }
+    }
+
+    static func homebrew(_ binary: URL) -> Homebrew? {
+        let path = binary.resolvingSymlinksInPath().path
+        guard let cellar = path.range(of: "/Cellar/kapitsa/") else { return nil }
+        let after = path[cellar.upperBound...]
+        let versionFolder = after.range(of: "/").map { String(after[..<$0.lowerBound]) } ?? String(after)
+        let receipt = String(path[..<cellar.upperBound]) + versionFolder + "/INSTALL_RECEIPT.json"
+        let text = (try? String(contentsOfFile: receipt, encoding: .utf8)) ?? ""
+        return Homebrew(brew: String(path[..<cellar.lowerBound]) + "/bin/brew",
+                        formula: text.contains("\"homebrew/core\"") ? "kapitsa" : "nace-ai/tap/kapitsa",
+                        head: versionFolder.hasPrefix("HEAD-"))
+    }
+
+    /// Updates an installed engine. A Homebrew install gets `brew upgrade` run here: Kapitsa's own `kapitsa update`
+    /// only runs brew from a terminal and, through a pipe like this one, prints the command and exits 1. Any other
+    /// installed copy runs `kapitsa update` (its signed download from GitHub). Minutes, not seconds.
     static func update() throws -> Output {
         guard let binary else { throw Failure(errorDescription: "Kapitsa engine not found.") }
         guard updatable else { throw Failure(errorDescription: "This kapitsa is inside an app and changes only with it.") }
+        if let brew = homebrew(binary) {
+            guard FileManager.default.isExecutableFile(atPath: brew.brew) else {
+                throw Failure(errorDescription: "This Kapitsa is Homebrew's, and there is no \(brew.brew) to update it with.")
+            }
+            var env = environment()
+            env["HOMEBREW_NO_ENV_HINTS"] = "1"
+            env["HOMEBREW_NO_COLOR"] = "1"
+            env["HOMEBREW_NO_EMOJI"] = "1"
+            env["NONINTERACTIVE"] = "1"
+            return try runSync(brew.brew, ["upgrade"] + (brew.head ? ["--fetch-HEAD"] : []) + [brew.formula], env: env, timeout: 900)
+        }
         return try runSync(binary.path, ["update"], env: environment(), timeout: 600)
     }
 
