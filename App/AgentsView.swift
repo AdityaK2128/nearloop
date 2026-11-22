@@ -83,6 +83,7 @@ struct AgentsView: View {
             HStack {
                 switch commandState {
                 case "installed": Label("Installed", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                case "kapitsa": Label("Kapitsa is installed in ~/.local/bin", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
                 case "foreign": Label("Conflicting command in ~/.local/bin", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 default: EmptyView()
                 }
@@ -93,7 +94,11 @@ struct AgentsView: View {
                         commandState = Kapitsa.commandState
                         store.notice = "Command-line tool installed. Open a new terminal window to use it."
                     } catch { store.errorMessage = error.localizedDescription }
-                }.disabled(commandState == "foreign")
+                }.disabled(commandState == "foreign" || commandState == "kapitsa")
+            }
+            if commandState == "kapitsa" {
+                Text("That is Kapitsa itself, from its own installer, so `kapitsa claude` and the others already work. It runs that Kapitsa; choose it in Settings › Engine to use it in Nearloop too.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !binOnPath {
                 Text("~/.local/bin is not on your PATH. Add `export PATH=\"$HOME/.local/bin:$PATH\"` to ~/.zshrc.")

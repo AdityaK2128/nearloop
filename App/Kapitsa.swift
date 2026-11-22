@@ -128,9 +128,19 @@ enum Kapitsa {
         return url
     }
 
-    /// This app's `kapitsa` command, by whatever path or link it is reached.
+    /// This app's `kapitsa` command, by whatever path or link it is reached: the script Nearloop writes, known by its
+    /// marker, not by where it is. Kapitsa's own installer puts the real kapitsa in ~/.local/bin too (when
+    /// /opt/homebrew/bin isn't writable), and that one is an engine like any other.
     static func isCommand(_ url: URL) -> Bool {
-        url.resolvingSymlinksInPath().path == commandURL.resolvingSymlinksInPath().path
+        let text = head(url)
+        return text.hasPrefix("#!") && (text.contains(commandMarker) || text.contains(legacyCommandMarker))
+    }
+
+    /// The first bytes of a file (through any link), enough to tell a script and its marker from an executable.
+    private static func head(_ url: URL) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url.resolvingSymlinksInPath()) else { return "" }
+        defer { try? handle.close() }
+        return String(decoding: (try? handle.read(upToCount: 512)) ?? Data(), as: UTF8.self)
     }
 
     /// A kapitsa inside an app bundle (this Nearloop or another copy) changes only with that app: updating it in
@@ -140,14 +150,16 @@ enum Kapitsa {
     }
 
     /// The kapitsa executables installed on this Mac: Homebrew's, /usr/local's and any on the login shell's PATH,
-    /// one per real file, leaving out the bundled copy and the app's own `kapitsa` command.
+    /// one per real file, leaving out the bundled copy and the app's own `kapitsa` command (a kapitsa that Kapitsa's
+    /// installer put in ~/.local/bin is listed: it is on loginPath).
     static var installed: [URL] {
         let fm = FileManager.default
-        var seen = Set([bundled, commandURL].compactMap { $0?.resolvingSymlinksInPath().path })
+        var seen = Set([bundled].compactMap { $0?.resolvingSymlinksInPath().path })
         var found: [URL] = []
         for folder in ["/opt/homebrew/bin", "/usr/local/bin"] + loginPath.split(separator: ":").map(String.init) {
             let url = URL(fileURLWithPath: folder).appendingPathComponent("kapitsa")
-            guard fm.isExecutableFile(atPath: url.path), seen.insert(url.resolvingSymlinksInPath().path).inserted else { continue }
+            guard fm.isExecutableFile(atPath: url.path), !isCommand(url),
+                  seen.insert(url.resolvingSymlinksInPath().path).inserted else { continue }
             found.append(url)
         }
         return found
@@ -336,18 +348,26 @@ enum Kapitsa {
     /// The marker the command carried before the app was renamed; such a command shows as outdated.
     static let legacyCommandMarker = "# Installed by Kapitsa Library"
 
+    /// "missing", "installed", "outdated", "kapitsa" (Kapitsa itself, from its own installer, which has the same
+    /// agent commands) or "foreign" (some other file Nearloop leaves alone).
     static var commandState: String {
         let path = commandURL.path
         guard FileManager.default.fileExists(atPath: path) else { return "missing" }
+        if !isCommand(commandURL) {
+            return !head(commandURL).hasPrefix("#!") && FileManager.default.isExecutableFile(atPath: path) ? "kapitsa" : "foreign"
+        }
         let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-        guard text.contains(commandMarker) || text.contains(legacyCommandMarker) else { return "foreign" }
         return text.contains(commandMarker) && text.contains(binary?.path ?? "\0") ? "installed" : "outdated"
     }
 
     static func installCommand() throws {
         guard let binary else { throw Failure(errorDescription: "Kapitsa engine not found. Reinstall Nearloop.") }
-        if commandState == "foreign" {
+        switch commandState {
+        case "kapitsa":
+            throw Failure(errorDescription: "\(commandURL.path) is Kapitsa itself, from Kapitsa's installer, and already runs kapitsa claude and the other agents. Nearloop leaves it in place; to use it here as well, choose it in Settings › Engine.")
+        case "foreign":
             throw Failure(errorDescription: "\(commandURL.path) already exists and was not installed by this app. Remove it first if you want this app's Kapitsa there.")
+        default: break
         }
         var script = "#!/bin/zsh\n\(commandMarker). Runs the Kapitsa engine Nearloop uses.\n"
         script += "export KAPITSA_NO_AUTO_UPDATE=1\n"
