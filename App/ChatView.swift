@@ -667,13 +667,14 @@ private struct Composer: View {
 /// A setting shown as a capsule: filled with the accent colour when on, quiet when off.
 struct Chip: View {
     let title: String
-    let symbol: String
+    /// None for a chip that is words alone, like Think.
+    var symbol: String?
     let on: Bool
     var trailing: String?
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: symbol)
+            if let symbol { Image(systemName: symbol) }
             Text(title)
             if let trailing { Image(systemName: trailing).font(.system(size: 8, weight: .bold)).opacity(0.8) }
         }
@@ -699,7 +700,8 @@ struct ThinkingMenu: View {
                 }
             }.pickerStyle(.inline)
         } label: {
-            Chip(title: chat.thinking == .off ? "Think" : "Think: \(chat.thinking.title)", symbol: "brain", on: chat.thinking != .off, trailing: "chevron.down")
+            // Words and a chevron only: filled while the model thinks (Auto, Medium, High), quiet when Off, as Search.
+            Chip(title: chat.thinking == .off ? "Think" : "Think: \(chat.thinking.title)", on: chat.thinking != .off, trailing: "chevron.down")
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
         .help("How much the model reasons before answering")
