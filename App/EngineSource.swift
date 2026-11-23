@@ -67,7 +67,8 @@ enum EngineSource {
 
     enum Status: Equatable {
         case atLatest(String)
-        case behind(Int, String)
+        /// How many commits behind, the words for the row, and the subjects of the newest of those commits.
+        case behind(Int, String, [String])
         /// What main holds right now, for a checkout that is not built yet: the commit a Build would compile.
         case remote(String)
         case unknown(String)
@@ -98,10 +99,39 @@ enum EngineSource {
             let when = age(try read(git, ["-C", checkout.source.path, "log", "-1", "--format=%cI", "FETCH_HEAD"])).map { ", \($0)" } ?? ""
             let behind = Int(try read(git, ["-C", checkout.source.path, "rev-list", "--count", "HEAD..FETCH_HEAD"])) ?? 0
             if behind == 0 { return .atLatest("At the latest commit on main (\(head)\(when))") }
-            return .behind(behind, "\(behind) commit\(behind == 1 ? "" : "s") behind main (\(head) → \(latest)\(when))")
+            // What a Build would bring: the newest commits' subjects, as main's log words them.
+            let subjects = try read(git, ["-C", checkout.source.path, "log", "--format=%s", "-n", "\(whatsNewLimit)", "HEAD..FETCH_HEAD"])
+                .split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            return .behind(behind, "\(behind) commit\(behind == 1 ? "" : "s") behind main (\(head) → \(latest)\(when))", subjects)
         } catch {
             return .unknown(error.localizedDescription)
         }
+    }
+
+    /// How many lines of what's new the Engine pane shows: commit subjects for a source build, release notes otherwise.
+    static let whatsNewLimit = 12
+
+    /// What the latest release brings, from its notes on GitHub: the bullet lines of the release body, without the
+    /// markdown; empty when GitHub does not answer. For an installed engine, which updates to that release.
+    static func releaseNotes() -> [String] {
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/nace-ai/kapitsa/releases/latest")!, timeoutInterval: 20)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let done = DispatchSemaphore(value: 0)
+        var lines: [String] = []
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            defer { done.signal() }
+            guard let data, (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let body = json["body"] as? String else { return }
+            lines = body.split(whereSeparator: \.isNewline).map { line -> String in
+                var text = line.trimmingCharacters(in: .whitespaces)
+                if text.hasPrefix("- ") || text.hasPrefix("* ") { text = String(text.dropFirst(2)) }
+                return text.replacingOccurrences(of: "`", with: "")
+            }.filter { !$0.isEmpty && !$0.hasPrefix("#") }
+            lines = Array(lines.prefix(whatsNewLimit))
+        }.resume()
+        _ = done.wait(timeout: .now() + 25)
+        return lines
     }
 
     /// What main holds right now, asked of GitHub before there is a checkout: the commit a first Build compiles.

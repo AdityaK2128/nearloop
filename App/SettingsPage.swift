@@ -257,6 +257,9 @@ struct EngineSettings: View {
     @State private var buildStep = ""
     /// How the last update ended, in the engine's own words, until the next check.
     @State private var updateResult: String?
+    /// What an update would bring, when there is one: the newest commits' subjects for a source build, the latest
+    /// release's notes for an installed engine.
+    @State private var whatsNew: [String] = []
 
     private static let other = "__other__"
     private var home: String { FileManager.default.homeDirectoryForCurrentUser.path }
@@ -323,6 +326,14 @@ struct EngineSettings: View {
                         Text(updateStatus).foregroundStyle(updateStatusColor)
                     }
                 }
+                if !whatsNew.isEmpty, !updating, updateResult == nil {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("What's New").foregroundStyle(.secondary)
+                        ForEach(Array(whatsNew.enumerated()), id: \.offset) { _, line in
+                            Text("•  " + line).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
                 switch kind {
                 case .bundled:
                     EmptyView()
@@ -373,10 +384,10 @@ struct EngineSettings: View {
         case .bundled:
             return "The engine that ships inside Nearloop. It changes only with the app. A Kapitsa installed with Homebrew, one you built yourself, or Kapitsa built here from source takes its place for the server, downloads, imports, benchmarks and the coding agents, from the next model load on; a running model keeps the engine it started with."
         case .installed:
-            return "An installed Kapitsa, used in the bundled copy's place. Update runs brew upgrade for a Homebrew install and kapitsa update (its signed download from GitHub) otherwise. A running model keeps the engine it started with until it is reloaded."
+            return "An installed Kapitsa, used in the bundled copy's place. Check for Updates asks for the latest release and shows its notes; Update runs brew upgrade for a Homebrew install and kapitsa update (its signed download from GitHub) otherwise. A running model keeps the engine it started with until it is reloaded."
         case .source(let checkout, let built):
             return built
-                ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main and counts the commits this checkout is behind; Build pulls main and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
+                ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main, counts the commits this checkout is behind and lists the newest of them; Build pulls main and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
                 : "Build clones nace-ai/kapitsa into \(short(checkout.source.path)), compiles the latest commit of main in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
         }
     }
@@ -390,7 +401,7 @@ struct EngineSettings: View {
         case .source:
             switch sourceStatus {
             case .none: return "Checking main…"
-            case .atLatest(let words), .behind(_, let words), .remote(let words), .unknown(let words): return words
+            case .atLatest(let words), .behind(_, let words, _), .remote(let words), .unknown(let words): return words
             }
         case .installed:
             switch check {
@@ -450,6 +461,7 @@ struct EngineSettings: View {
         updateResult = nil
         check = nil
         sourceStatus = nil
+        whatsNew = []
         switch kind {
         case .bundled:
             return
@@ -461,12 +473,15 @@ struct EngineSettings: View {
         case .source(let checkout, built: true):
             Task.detached {
                 let status = EngineSource.check(checkout)
-                await MainActor.run { sourceStatus = status }
+                let news: [String] = if case .behind(_, _, let subjects) = status { subjects } else { [] }
+                await MainActor.run { sourceStatus = status; whatsNew = news }
             }
         case .installed:
             Task.detached {
                 let answer = Kapitsa.checkForUpdate()
-                await MainActor.run { check = answer }
+                // The release's notes say what the update brings; asked only when there is one.
+                let news: [String] = if case .available = answer { EngineSource.releaseNotes() } else { [] }
+                await MainActor.run { check = answer; whatsNew = news }
             }
         }
     }
