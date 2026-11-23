@@ -64,8 +64,10 @@ struct MainWindow: View {
                     if let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
                         let frame = window.frame
                         var token: NSObjectProtocol?
+                        // AppKit can resize more than once, so this watches for a second; a resize the user is dragging
+                        // in that time is theirs, and stays.
                         token = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { _ in
-                            if window.frame.size != frame.size { window.setFrame(frame, display: true, animate: false) }
+                            if !window.inLiveResize, window.frame.size != frame.size { window.setFrame(frame, display: true, animate: false) }
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { if let token { NotificationCenter.default.removeObserver(token) } }
                     }

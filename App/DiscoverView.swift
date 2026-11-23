@@ -10,20 +10,29 @@ struct DiscoverView: View {
                 Text("Kapitsa Catalog").tag(0)
                 Text("Hugging Face").tag(1)
             }.pickerStyle(.segmented).labelsHidden().fixedSize()
-            ActiveDownloads()
-            if source == 0 { CatalogSection(store: store) } else { HuggingFaceSection() }
+            if source == 0 {
+                // Catalog downloads show under their variant already.
+                ActiveDownloads(excluding: Set(store.catalog.flatMap { $0.variants.map(\.id) }))
+                CatalogSection(store: store)
+            } else {
+                HuggingFaceSection()
+            }
         }
         .task { await store.loadCatalogDetails() }
     }
 }
 
 /// The downloads under way or paused, one line each, above whichever list is shown: a download started from a
-/// search is otherwise lost from view as soon as the search changes.
+/// search is otherwise lost from view as soon as the search changes. Downloads the list below already shows with
+/// their progress (`excluding`, with their drafters) are left out, so none appears twice.
 private struct ActiveDownloads: View {
+    var excluding: Set<String> = []
     @ObservedObject var downloads = Downloads.shared
 
     private var shown: [Downloads.Job] {
-        downloads.jobs.values.filter { $0.state != .finished }.sorted { $0.title < $1.title }
+        downloads.jobs.values.filter { job in
+            job.state != .finished && !excluding.contains(job.id) && !excluding.contains(downloads.attachedModel(of: job.id) ?? "")
+        }.sorted { $0.title < $1.title }
     }
 
     var body: some View {
@@ -34,12 +43,29 @@ private struct ActiveDownloads: View {
                     HStack(spacing: 12) {
                         Text(job.title).font(.callout).lineLimit(1).truncationMode(.middle).frame(minWidth: 120, alignment: .leading)
                         ProgressView(value: job.fraction).frame(maxWidth: .infinity)
-                        Text(status(job)).font(.caption).monospacedDigit().foregroundStyle(.secondary).frame(width: 150, alignment: .trailing)
+                        Text(status(job)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                            .lineLimit(2).truncationMode(.tail).help(status(job)).frame(width: 150, alignment: .trailing)
                         action(job)
+                        if stopped(job) {
+                            Button { dismiss(job) } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+                                .help("Remove from this list. The files downloaded so far are kept, so downloading it again picks up where it stopped.")
+                        }
                     }
                 }
             }.card()
         }
+    }
+
+    /// Paused or failed: nothing runs, so the line can be removed.
+    private func stopped(_ job: Downloads.Job) -> Bool {
+        if case .failed = job.state { return true }
+        return job.state == .paused
+    }
+
+    /// Removes a stopped download (and its drafter, when that isn't running) from the list; its files stay.
+    private func dismiss(_ job: Downloads.Job) {
+        if let drafter = downloads.attachedDrafter(of: job.id), downloads.jobs[drafter]?.busy != true { downloads.dismiss(drafter) }
+        downloads.dismiss(job.id)
     }
 
     private func status(_ job: Downloads.Job) -> String {
@@ -212,6 +238,8 @@ private struct HuggingFaceSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            // Downloads started from an earlier search; the rows below show their own.
+            ActiveDownloads(excluding: Set(shown.map(\.id)))
             HStack(spacing: 10) {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -361,7 +389,7 @@ private struct HuggingFaceRow: View {
                 }
                 if used.isEmpty {
                     Badge(text: details.hasMTP ? "MTP not used" : "None", color: .secondary, symbol: "bolt.slash")
-                        .help(details.hasMTP ? "The upload ships multi-token-prediction heads (mtp.safetensors), and the catalog downloads them, but Kapitsa's engine for this family does not draft with them yet: it decodes without speculative decoding."
+                        .help(details.hasMTP ? "The upload has multi-token-prediction heads, but Kapitsa's catalog runs this family without speculative decoding: it lists no companion to draft with."
                                              : "Kapitsa runs this family without speculative decoding: the upload has no MTP heads and the catalog adds no drafter.")
                 }
             }.font(.caption)

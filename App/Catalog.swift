@@ -517,6 +517,9 @@ final class Downloads: ObservableObject {
 
     func attachedDrafter(of model: String) -> String? { attachments.first { $0.value == model }?.key }
 
+    /// The model download a drafter download belongs to.
+    func attachedModel(of drafter: String) -> String? { attachments[drafter] }
+
     /// Downloads a repository's config and weights straight from Hugging Face with curl (resumable), checking
     /// each file's SHA-256. For drafters, which `kapitsa pull` doesn't take (it pulls Qwen3.5-family models).
     func startFiles(_ repo: String, title: String, expectedBytes: Int64) {
