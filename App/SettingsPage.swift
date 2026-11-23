@@ -242,6 +242,7 @@ struct AboutSettings: View {
 /// The Kapitsa engine the app runs: the bundled one, an installed one, or the latest commit built from source.
 struct EngineSettings: View {
     @AppStorage("enginePath") private var engine = ""
+    @AppStorage("fastProfile") private var fastProfile = false
     /// The picker's own selection: the engine, or the "Other…" entry while the file dialog is up.
     @State private var selection = ""
     @State private var version = "…"
@@ -352,6 +353,17 @@ struct EngineSettings: View {
                 }
             } footer: {
                 Text(footer).foregroundStyle(chosenMissing ? .orange : .secondary)
+            }
+            Section {
+                Picker("Mode", selection: $fastProfile) {
+                    Text("Precise").tag(false)
+                    Text("Fast").tag(true)
+                }
+            } footer: {
+                Text(fastProfile
+                     ? "Kapitsa's fast profile: on top of the exact path, the speedups Kapitsa found to change the output no more than the fastest other engine does for that model on that kind of Mac, such as 8-bit weights for Inkling 2's 16-bit layers. Each speedup applies only to the Macs and models it was measured on; elsewhere Fast runs as Precise. Takes effect when a model is next loaded."
+                     : "Kapitsa's default: every output matches the model's reference within its measured noise. Fast adds the speedups Kapitsa found to change the output no more than the fastest other engine does, for the Macs and models each was measured on. Takes effect when a model is next loaded.")
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

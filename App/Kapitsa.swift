@@ -56,6 +56,9 @@ enum Prefs {
     static var runtimeFolder: String? { defaults.string(forKey: "runtimeFolder").flatMap { $0.isEmpty ? nil : $0 } }
     /// The kapitsa executable chosen in Settings › Engine; nil runs the copy bundled in the app.
     static var engine: String? { defaults.string(forKey: "enginePath").flatMap { $0.isEmpty ? nil : $0 } }
+    /// Kapitsa's fast profile (docs/profiles.md): the speedups that move outputs no more than the fastest other engine
+    /// does, for the Macs and models each one targets. Off: precise, the exact outputs.
+    static var fastProfile: Bool { defaults.bool(forKey: "fastProfile") }
     static var libraries: [String] {
         get { defaults.stringArray(forKey: "libraryFolders") ?? [] }
         set { defaults.set(newValue, forKey: "libraryFolders") }
@@ -257,6 +260,9 @@ enum Kapitsa {
         // A bundled binary must never replace itself inside the signed app, and a chosen one is updated by whoever
         // installed it (Homebrew, or the user's own build), not behind the app's back.
         env["KAPITSA_NO_AUTO_UPDATE"] = "1"
+        // Every engine reads its profile from here (`kapitsa serve --profile` sets the same variable); an engine
+        // without a fast member for this Mac and model runs precise either way.
+        env["KAPITSA_PROFILE"] = Prefs.fastProfile ? "fast" : "precise"
         if let custom = Prefs.runtimeFolder {
             let root = URL(fileURLWithPath: custom)
             for name in ["tmp", "cache", "huggingface/hub"] {
