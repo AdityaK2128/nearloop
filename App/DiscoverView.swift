@@ -177,7 +177,7 @@ private struct HuggingFaceSection: View {
                 Spacer()
                 if !results.isEmpty { Text("\(shown.count) of \(results.count) results").font(.caption).foregroundStyle(.secondary) }
             }
-            Text("Compatible means a model family the engine in use has in its Kapitsa Catalog. Kapitsa downloads Qwen3.5-family MLX models (4- to 8-bit or BF16) from any repository; other families only from the repositories its catalog names, as the catalog's own build.")
+            Text("Compatible means Kapitsa can download it: a Qwen3.5-family MLX model (4- to 8-bit or BF16) from any repository, or another family the engine in use has in its Kapitsa Catalog, from the repository the catalog names, as the catalog's own build.")
                 .font(.caption).foregroundStyle(.secondary)
             if searching { ProgressView().frame(maxWidth: .infinity).padding() }
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
@@ -221,7 +221,11 @@ private struct HuggingFaceRow: View {
     /// estimate shows, marked ~) and whether the vision tower came along.
     @State private var files: HuggingFace.Files?
 
-    var folder: URL { Kapitsa.downloads.appendingPathComponent(model.id.replacingOccurrences(of: "/", with: "--")) }
+    /// Where `kapitsa pull` puts this repository: a catalog repository downloads as the catalog's build, into its folder.
+    var folder: URL {
+        store.catalogVariant(forRepo: model.id)?.folder
+            ?? Kapitsa.downloads.appendingPathComponent(model.id.replacingOccurrences(of: "/", with: "--"))
+    }
     var compatible: Bool { store.compatible(model.modelType) }
     var owner: String { String(model.id.split(separator: "/").first ?? "") }
     var name: String { String(model.id.split(separator: "/").last ?? "") }
@@ -243,7 +247,9 @@ private struct HuggingFaceRow: View {
     /// Verified size first, then the files' sizes, then the listing's estimate.
     /// Bits per weight as the files have them: their size over the Hub's parameter count. Nil until the files are read.
     private var effectiveBits: Double? {
-        let bytes = (details?.bytes).flatMap { $0 > 0 ? $0 : nil } ?? files?.bytes
+        // This repository's own files: a catalog build's size (details for one) is another set of files.
+        let own = details?.catalogBuild == true ? nil : (details?.bytes).flatMap { $0 > 0 ? $0 : nil }
+        let bytes = own ?? files?.bytes
         guard let bytes, let total = model.safetensors?.total, total > 0 else { return nil }
         return Double(bytes) * 8 / Double(total)
     }

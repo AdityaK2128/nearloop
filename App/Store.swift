@@ -183,7 +183,11 @@ final class AppStore: ObservableObject {
             catalog = try await Task.detached { try Catalog.load() }.value
             catalogError = nil
         } catch { catalogError = error.localizedDescription; return }
+        // Another engine may list other families: details of families it doesn't have are dropped.
+        let families = Set(catalog.map(\.id))
+        catalogDetails = catalogDetails.filter { families.contains($0.key) }
         await loadCatalogDetails()
+        await loadCatalogTypes()
     }
 
     private var loadingDetails = false
@@ -221,7 +225,8 @@ final class AppStore: ObservableObject {
     /// engine's catalog has now. Called after the catalog details, which name the repositories.
     func loadCatalogTypes() async {
         var known = (UserDefaults.standard.dictionary(forKey: Self.typesKey) as? [String: String]) ?? [:]
-        let repos = Set(catalogDetails.values.compactMap(\.repo))
+        let families = Set(catalog.map(\.id))
+        let repos = Set(catalogDetails.filter { families.contains($0.key) }.values.compactMap(\.repo))
         await withTaskGroup(of: (String, String?).self) { group in
             for repo in repos where known[repo] == nil {
                 group.addTask {
@@ -238,13 +243,20 @@ final class AppStore: ObservableObject {
         catalogTypes = Set(repos.compactMap { known[$0] }.map(ModelScanner.familyType))
     }
 
-    /// Whether a Hugging Face model's type is one the engine's catalog covers: a text-only conversion counts with
-    /// its family. Until the catalog's types are known (first run, offline), the types Nearloop knows stand in.
+    /// Whether Kapitsa can download a Hugging Face model of this type: a Qwen3.5-family MLX upload from any repository
+    /// (Kapitsa's own check takes them all), another family when the engine's catalog has it (a text-only conversion
+    /// counts with its family). Until the catalog's types are known (first run, offline), only the Qwen family counts.
     func compatible(_ modelType: String?) -> Bool {
         guard let modelType else { return false }
-        let type = ModelScanner.familyType(modelType)
-        if !catalogTypes.isEmpty { return catalogTypes.contains(type) }
-        return ModelScanner.qwenTypes.contains(modelType) || ModelScanner.otherTypes.contains(modelType)
+        return ModelScanner.qwenTypes.contains(modelType) || catalogTypes.contains(ModelScanner.familyType(modelType))
+    }
+
+    /// The catalog variant `kapitsa pull <repo>` takes for one of the catalog's repositories: Kapitsa downloads it as
+    /// that build, into the variant's folder rather than one named after the repository.
+    func catalogVariant(forRepo repo: String) -> CatalogVariant? {
+        let wanted = repo.lowercased()
+        guard let family = catalogDetails.first(where: { $0.value.repo?.lowercased() == wanted })?.key else { return nil }
+        return catalog.first { $0.id == family }?.defaultVariant
     }
 
     func localModel(for variant: CatalogVariant) -> LocalModel? { model(at: variant.folder.path) }

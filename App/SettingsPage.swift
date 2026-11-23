@@ -359,8 +359,8 @@ struct EngineSettings: View {
         .onChange(of: selection) { _, chosen in
             if chosen == Self.other { choose() } else if chosen != engine { engine = chosen }
         }
-        // The Library lists what the engine in use runs, so it is read again when the engine changes.
-        .onChange(of: engine) { _, _ in Task { await AppStore.shared.scan() } }
+        // The Library lists what the engine runs and Discover what its catalog has: both are read again.
+        .onChange(of: engine) { _, _ in Task { await AppStore.shared.scan(); await AppStore.shared.loadCatalog() } }
         .task(id: engine) {
             selection = engine; scan(); checkForUpdate()
             // A build started before this pane was last closed is still running: show it, and check once it ends.
@@ -373,6 +373,7 @@ struct EngineSettings: View {
             scan()
             checkForUpdate()
             await AppStore.shared.scan()
+            await AppStore.shared.loadCatalog()
         }
     }
 
@@ -506,6 +507,7 @@ struct EngineSettings: View {
             let result = outcome.isEmpty ? (current == before ? "Already the latest: \(current)" : "Updated to \(current)") : outcome
             await MainActor.run { updating = false; updateResult = result; version = current; scan() }
             await AppStore.shared.scan()
+            await AppStore.shared.loadCatalog()
         }
     }
 
@@ -528,6 +530,7 @@ struct EngineSettings: View {
                 if let failure { updateResult = failure } else { checkForUpdate() }
             }
             await AppStore.shared.scan()
+            await AppStore.shared.loadCatalog()
         }
     }
 

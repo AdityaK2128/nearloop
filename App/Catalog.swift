@@ -320,14 +320,14 @@ enum HuggingFace {
         let type = config["model_type"] as? String ?? "unknown"
         guard ModelScanner.family(config) == "qwen" else {
             // Another family: Kapitsa downloads it only as its catalog's build, and runs it only with an engine that knows it.
-            if let size = catalog[id] {
+            if let size = catalog[id] ?? catalog.first(where: { $0.key.lowercased() == id.lowercased() })?.value {
                 var result = Details(bytes: size > 0 ? size : bytes, problem: nil)
                 result.vision = config["vision_config"] != nil
                 result.catalogBuild = true
                 return result
             }
             if types.contains(ModelScanner.familyType(type)) {
-                return Details(bytes: bytes, problem: "Kapitsa runs \(type) models, but downloads them from Hugging Face only from the repository its catalog names. Look under Kapitsa Catalog.")
+                return Details(bytes: bytes, problem: "Kapitsa runs \(type) models. Nearloop downloads this family as the catalog's own build, from the repository the catalog names: look under Kapitsa Catalog.")
             }
             return Details(bytes: bytes, problem: "Unsupported architecture: \(type). The engine in use has no \(type) model in its catalog; Hugging Face downloads of other families take Qwen3.5-family MLX models.")
         }
