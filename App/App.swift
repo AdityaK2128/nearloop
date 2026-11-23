@@ -8,10 +8,13 @@ struct MainWindow: View {
     @ObservedObject var downloads = Downloads.shared
     @ObservedObject var updater = Updater.shared
     @AppStorage(Page.experimentalKey) private var experimental = false
+    /// The sidebar's visibility, kept here so the toggle is the app's own: the system one left the toolbar when the
+    /// sidebar collapsed, reappearing only inside an empty overflow button ("»") at the far right.
+    @State private var columns = NavigationSplitViewVisibility.all
 
     var body: some View {
         let pages = Page.visible(experimental: experimental)
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             List(selection: Binding(get: { store.page }, set: { if let page = $0 { store.page = page } })) {
                 ForEach(pages.filter { $0.section == nil }, id: \.self) { row($0) }
                 ForEach(Page.sections.filter { section in pages.contains { $0.section == section } }, id: \.self) { section in
@@ -22,6 +25,7 @@ struct MainWindow: View {
             }
             .safeAreaInset(edge: .bottom) { sidebarFooter }
             .navigationSplitViewColumnWidth(min: 200, ideal: 215, max: 260)
+            .toolbar(removing: .sidebarToggle)
         } detail: {
             VStack(spacing: 0) {
                 Group {
@@ -45,6 +49,31 @@ struct MainWindow: View {
                         Button { store.notice = "" } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).font(.caption)
                     }.padding(.horizontal, 16).padding(.vertical, 8)
                 }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    // No animation: the split view's own slide let the content run past the window's right edge
+                    // and spring back when the sidebar came back.
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { columns = columns == .detailOnly ? .all : .detailOnly }
+                    // AppKit brings a sidebar back by widening the window when it can, keeping the content's width;
+                    // the window is to stay as the user sized it, so its frame is put back and the content gives way.
+                    if let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
+                        let frame = window.frame
+                        var token: NSObjectProtocol?
+                        token = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { _ in
+                            if window.frame.size != frame.size { window.setFrame(frame, display: true, animate: false) }
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { if let token { NotificationCenter.default.removeObserver(token) } }
+                    }
+                } label: {
+                    Label(columns == .detailOnly ? "Show Sidebar" : "Hide Sidebar", systemImage: "sidebar.left")
+                }
+                .help(columns == .detailOnly ? "Show Sidebar" : "Hide Sidebar")
+                .keyboardShortcut("s", modifiers: [.command, .control])
             }
         }
         .frame(minWidth: 1000, minHeight: 680)
@@ -271,3 +300,4 @@ struct GoMenu: View {
         }
     }
 }
+

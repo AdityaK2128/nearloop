@@ -47,7 +47,12 @@ struct ModelsView: View {
                     if store.scanning { ProgressView().controlSize(.small) }
                     Button { Task { await store.scan() } } label: { Image(systemName: "arrow.clockwise") }.help("Rescan")
                 }.buttonStyle(.borderless).padding(12)
-            }.frame(width: 300).background(Color(nsColor: .windowBackgroundColor))
+            }
+            // The list starts where the other pages' content does (their gutter), so switching to the Library does not
+            // throw everything to the left; its own 12-point padding makes up the rest.
+            .padding(.leading, Metrics.gutter - 12)
+            .frame(minWidth: 260, idealWidth: 300 + Metrics.gutter - 12, maxWidth: 300 + Metrics.gutter - 12)
+            .background(Color(nsColor: .windowBackgroundColor))
             Divider()
             ScrollView {
                 if let model = store.selected {
@@ -169,17 +174,8 @@ private struct ModelDetail: View {
             }
             HStack(spacing: 14) {
                 Text("Context").foregroundStyle(.secondary)
-                Picker("Context", selection: $store.context) {
-                    ForEach(model.contextOptions(including: store.context), id: \.self) { Text(model.contextLabel($0).replacingOccurrences(of: " (Max)", with: "")).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize().disabled(server.running)
-                .help("Tokens per conversation. Larger contexts use more memory.")
-                TextField("Custom", text: $customContext)
-                    .textFieldStyle(.roundedBorder).frame(width: 90).disabled(server.running)
-                    .help(model.nativeContext != nil ? "Any context from \(shortTokens(LocalModel.smallestCustom)) to \(model.contextLabel("max").replacingOccurrences(of: " (Max)", with: "")): 200k, 204800 or 1m. Press Return to use it."
-                          : "This model doesn’t state its context limit, so only the sizes shown can be used.")
-                    .onSubmit { useCustomContext() }
-                    .onChange(of: customContext) { _, _ in customProblem = nil }
+                contextPicker
+                customContextField
                 Spacer(minLength: 0)
             }
             if let customProblem {
@@ -231,6 +227,23 @@ private struct ModelDetail: View {
     }
 
     /// Uses the size typed in the Custom box, or says why it can't.
+    private var contextPicker: some View {
+        Picker("Context", selection: $store.context) {
+            ForEach(model.contextOptions(including: store.context), id: \.self) { Text(model.contextLabel($0).replacingOccurrences(of: " (Max)", with: "")).tag($0) }
+        }
+        .pickerStyle(.segmented).labelsHidden().fixedSize().disabled(server.running)
+        .help("Tokens per conversation. Larger contexts use more memory.")
+    }
+
+    private var customContextField: some View {
+        TextField("Custom", text: $customContext)
+            .textFieldStyle(.roundedBorder).frame(width: 90).disabled(server.running)
+            .help(model.nativeContext != nil ? "Any context from \(shortTokens(LocalModel.smallestCustom)) to \(model.contextLabel("max").replacingOccurrences(of: " (Max)", with: "")): 200k, 204800 or 1m. Press Return to use it."
+                  : "This model doesn’t state its context limit, so only the sizes shown can be used.")
+            .onSubmit { useCustomContext() }
+            .onChange(of: customContext) { _, _ in customProblem = nil }
+    }
+
     private func useCustomContext() {
         guard !customContext.trimmingCharacters(in: .whitespaces).isEmpty else { customProblem = nil; return }
         guard let limit = model.nativeContext else {
@@ -252,16 +265,28 @@ private struct ModelDetail: View {
         customProblem = nil
     }
 
+    @ViewBuilder private var fileButtons: some View {
+        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.path)]) }
+        let busy = store.busyReason(model)
+        Button("Move To…") { store.relocate(model) }
+            .disabled(busy != nil)
+            .help(busy ?? "Move this model to another folder or drive; it stays in your library")
+        Button("Move to Trash…", role: .destructive) { confirmDelete = true }
+            .disabled(busy != nil).help(busy ?? "")
+    }
+
     /// The estimate for every context option, so the cost of a larger one is visible before loading.
     @ViewBuilder private var contextEstimates: some View {
         if let kv = SystemMemory.kvBytesPerToken(model) {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 14) {
+                // A grid that wraps: six fixed figures in one row made the page wider than a narrow window, which
+                // grew the window whenever the sidebar came back.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 14, alignment: .leading)], alignment: .leading, spacing: 4) {
                     ForEach(model.contextOptions(including: store.context), id: \.self) { context in
                         if let tokens = model.contextTokens(context), let need = SystemMemory.estimatedNeedGB(model, tokens: tokens) {
                             let fit = SystemMemory.fit(needGB: need)
                             Text(model.contextLabel(context).replacingOccurrences(of: " (Max)", with: "") + String(format: "  %.1f GB", need))
-                                .font(.caption.monospacedDigit())
+                                .font(.caption.monospacedDigit()).lineLimit(1)
                                 .foregroundStyle(fit == .tight ? Color.red : fit == .reclaims && Prefs.protectMemory ? Color.orange : Color.secondary)
                                 .fontWeight(context == store.context ? .semibold : .regular)
                         }
@@ -330,15 +355,7 @@ private struct ModelDetail: View {
                             Text(String(format: "Moving…  %.0f%%", fraction * 100)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
                         }.frame(maxWidth: 360)
                     }
-                    HStack(spacing: 10) {
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.path)]) }
-                        let busy = store.busyReason(model)
-                        Button("Move To…") { store.relocate(model) }
-                            .disabled(busy != nil)
-                            .help(busy ?? "Move this model to another folder or drive; it stays in your library")
-                        Button("Move to Trash…", role: .destructive) { confirmDelete = true }
-                            .disabled(busy != nil).help(busy ?? "")
-                    }
+                    HStack(spacing: 10) { fileButtons }
                 }
             }
         }.font(.callout).card()

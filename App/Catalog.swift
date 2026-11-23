@@ -279,6 +279,21 @@ enum HuggingFace {
         return try JSONDecoder().decode([Model].self, from: data)
     }
 
+    /// One repository by name, with the same fields as a search row: for a pasted org/name or address, which the
+    /// search would miss when the repository is not tagged mlx (an official upload in another format, say).
+    /// Nil when there is no such repository.
+    static func model(_ id: String) async throws -> Model? {
+        var components = URLComponents(string: "https://huggingface.co/api/models/\(id)")!
+        components.queryItems = ["config", "safetensors", "lastModified", "downloads", "likes", "tags", "trendingScore", "baseModels"]
+            .map { URLQueryItem(name: "expand[]", value: $0) }
+        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 200: return try JSONDecoder().decode(Model.self, from: data)
+        case 401, 403, 404: return nil
+        default: throw Kapitsa.Failure(errorDescription: "Unable to reach Hugging Face. Check your internet connection.")
+        }
+    }
+
     /// What the repository's current revision holds, from one listing of its files.
     struct Files {
         /// The files added up: what a download writes. (The Hub's `usedStorage` counts every revision ever
@@ -324,6 +339,7 @@ enum HuggingFace {
                 var result = Details(bytes: size > 0 ? size : bytes, problem: nil)
                 result.vision = config["vision_config"] != nil
                 result.catalogBuild = true
+                result.hasMTP = await shipsMTP(id, siblings: siblings)
                 return result
             }
             if types.contains(ModelScanner.familyType(type)) {
@@ -333,15 +349,7 @@ enum HuggingFace {
         }
         var result = Details(bytes: bytes, problem: ModelScanner.quantizationError(config))
         result.vision = config["vision_config"] != nil
-        // MTP heads live in the weights (mtp.* tensors) or in a file of their own.
-        let names = siblings.compactMap { $0["rfilename"] as? String }
-        if names.contains(where: { URL(fileURLWithPath: $0).lastPathComponent.lowercased().hasPrefix("mtp") }) {
-            result.hasMTP = true
-        } else if names.contains("model.safetensors.index.json"),
-                  let index = try? await json("https://huggingface.co/\(id)/resolve/main/model.safetensors.index.json"),
-                  let map = index["weight_map"] as? [String: Any] {
-            result.hasMTP = map.keys.contains { $0.hasPrefix("mtp.") || $0.contains(".mtp.") }
-        }
+        result.hasMTP = await shipsMTP(id, siblings: siblings)
         // A drafter fits when it was built for a model of exactly this shape (layers, width, vocabulary).
         if let signature = ModelScanner.targetSignature(config) {
             for repo in drafters {
@@ -354,6 +362,17 @@ enum HuggingFace {
             }
         }
         return result
+    }
+
+    /// Whether the repository ships multi-token-prediction heads: in a file of their own (mtp*.safetensors) or as
+    /// mtp.* tensors in the weights, read from the index.
+    private static func shipsMTP(_ id: String, siblings: [[String: Any]]) async -> Bool {
+        let names = siblings.compactMap { $0["rfilename"] as? String }
+        if names.contains(where: { URL(fileURLWithPath: $0).lastPathComponent.lowercased().hasPrefix("mtp") }) { return true }
+        guard names.contains("model.safetensors.index.json"),
+              let index = try? await json("https://huggingface.co/\(id)/resolve/main/model.safetensors.index.json"),
+              let map = index["weight_map"] as? [String: Any] else { return false }
+        return map.keys.contains { $0.hasPrefix("mtp.") || $0.contains(".mtp.") }
     }
 
     private static func json(_ address: String) async throws -> [String: Any]? {

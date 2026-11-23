@@ -10,9 +10,65 @@ struct DiscoverView: View {
                 Text("Kapitsa Catalog").tag(0)
                 Text("Hugging Face").tag(1)
             }.pickerStyle(.segmented).labelsHidden().fixedSize()
+            ActiveDownloads()
             if source == 0 { CatalogSection(store: store) } else { HuggingFaceSection() }
         }
         .task { await store.loadCatalogDetails() }
+    }
+}
+
+/// The downloads under way or paused, one line each, above whichever list is shown: a download started from a
+/// search is otherwise lost from view as soon as the search changes.
+private struct ActiveDownloads: View {
+    @ObservedObject var downloads = Downloads.shared
+
+    private var shown: [Downloads.Job] {
+        downloads.jobs.values.filter { $0.state != .finished }.sorted { $0.title < $1.title }
+    }
+
+    var body: some View {
+        if !shown.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Downloads").font(.headline)
+                ForEach(shown) { job in
+                    HStack(spacing: 12) {
+                        Text(job.title).font(.callout).lineLimit(1).truncationMode(.middle).frame(minWidth: 120, alignment: .leading)
+                        ProgressView(value: job.fraction).frame(maxWidth: .infinity)
+                        Text(status(job)).font(.caption).monospacedDigit().foregroundStyle(.secondary).frame(width: 150, alignment: .trailing)
+                        action(job)
+                    }
+                }
+            }.card()
+        }
+    }
+
+    private func status(_ job: Downloads.Job) -> String {
+        switch job.state {
+        case .preparing: return "Preparing…"
+        case .pausing: return "Pausing…"
+        case .failed(let why): return why.isEmpty ? "Failed" : why
+        default:
+            let done = String(format: "%.1f", Double(job.done) / 1e9), total = String(format: "%.1f GB", Double(job.expected) / 1e9)
+            return job.expected > 0 ? String(format: "%.0f%% · %@ of %@", job.fraction * 100, done, total) : "\(done) GB"
+        }
+    }
+
+    @ViewBuilder private func action(_ job: Downloads.Job) -> some View {
+        switch job.state {
+        case .preparing, .running:
+            Button("Pause") {
+                downloads.pause(job.id)
+                if let drafter = downloads.attachedDrafter(of: job.id) { downloads.pause(drafter) }
+            }
+        case .pausing:
+            Button("Pausing…") {}.disabled(true)
+        case .paused:
+            Button("Resume") { downloads.start(job.id, title: job.title, expectedBytes: job.expected) }
+        case .failed:
+            Button("Retry") { downloads.start(job.id, title: job.title, expectedBytes: job.expected) }
+        case .finished:
+            EmptyView()
+        }
     }
 }
 
@@ -194,10 +250,13 @@ private struct HuggingFaceSection: View {
         latest += 1
         let id = latest, sort = sort
         Task {
-            // A pasted model address or org/name searches for that repository.
-            let text = HuggingFace.repositoryID(query) ?? query
+            // A pasted model address or org/name shows that repository itself, whatever it is tagged; if there is
+            // none by that name, the words are searched for.
+            let repository = HuggingFace.repositoryID(query)
             do {
-                let found = try await HuggingFace.search(text, sort: sort)
+                var found: [HuggingFace.Model] = []
+                if let repository, let model = try await HuggingFace.model(repository) { found = [model] }
+                else { found = try await HuggingFace.search(repository ?? query, sort: sort) }
                 guard id == latest else { return }
                 results = found
                 if sort == .size { Task { await readSizes(found) } }
@@ -284,8 +343,29 @@ private struct HuggingFaceRow: View {
     /// The two ways Kapitsa drafts tokens ahead, as pills: the model's own MTP heads (in the upload or not) and a
     /// DFlash2 drafter from the catalog, a separate small network that fits any model of this shape. With both
     /// present Kapitsa runs the drafter, which accepts more tokens per step.
+    /// For a catalog build, what the catalog itself runs the model with (its companions): "MTP", "DFlash",
+    /// "Prompt lookup"; empty when the engine runs that family without speculative decoding.
+    private var catalogSpeedups: [String]? {
+        guard details?.catalogBuild == true else { return nil }
+        return store.catalogDetails.first { $0.value.repo?.caseInsensitiveCompare(model.id) == .orderedSame }?.value.speedups ?? []
+    }
+
     @ViewBuilder private var speedups: some View {
-        if let details, details.problem == nil {
+        if let details, details.problem == nil, let used = catalogSpeedups {
+            // The catalog's own build: what counts is what Kapitsa runs it with, not what the upload holds.
+            HStack(spacing: 10) {
+                Text("Speculative decoding").foregroundStyle(.secondary)
+                ForEach(used, id: \.self) { name in
+                    Badge(text: name, color: name == "MTP" ? .green : .purple, symbol: "bolt.fill")
+                        .help("Downloaded with the model by Kapitsa's catalog and used when it runs.")
+                }
+                if used.isEmpty {
+                    Badge(text: details.hasMTP ? "MTP not used" : "None", color: .secondary, symbol: "bolt.slash")
+                        .help(details.hasMTP ? "The upload ships multi-token-prediction heads (mtp.safetensors), and the catalog downloads them, but Kapitsa's engine for this family does not draft with them yet: it decodes without speculative decoding."
+                                             : "Kapitsa runs this family without speculative decoding: the upload has no MTP heads and the catalog adds no drafter.")
+                }
+            }.font(.caption)
+        } else if let details, details.problem == nil {
             HStack(spacing: 10) {
                 Text("Speculative decoding").foregroundStyle(.secondary)
                 if let drafter = details.drafter {
