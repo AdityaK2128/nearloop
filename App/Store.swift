@@ -64,6 +64,14 @@ final class AppStore: ObservableObject {
     @Published private(set) var catalogError: String?
     /// Per family: its Hugging Face repository and the files that speed it up, from Kapitsa's catalog.
     @Published private(set) var catalogDetails: [String: Catalog.Details] = [:]
+    /// The model types (config.json's model_type) of the repositories the engine's catalog downloads from: what
+    /// "Kapitsa-compatible" means in Discover, read from the catalog rather than kept as a list in the app, so a
+    /// family Kapitsa adds (Inkling-2, say) counts as soon as the engine in use lists it. Remembered per repository.
+    @Published private(set) var catalogTypes: Set<String> = []
+    /// Each Hugging Face repository's files, read once (HuggingFace.files): the exact download size the rows show
+    /// and the size sort orders by, so the order follows the files, not the listing's estimate.
+    @Published var hubFiles: [String: HuggingFace.Files] = [:]
+    private static let typesKey = "catalogModelTypes"
     @Published private(set) var benchmarks: [BenchResult] = []
     @Published private(set) var scanning = false
     @Published var selectedModelID: String? = UserDefaults.standard.string(forKey: "selectedModel")
@@ -203,10 +211,41 @@ final class AppStore: ObservableObject {
                     next()
                 }
             }
+            await loadCatalogTypes()
         }
     }
 
     var recommended: CatalogVariant? { Catalog.recommended(catalog) }
+
+    /// Reads each catalog repository's model_type once (then from UserDefaults) and keeps the set of the ones the
+    /// engine's catalog has now. Called after the catalog details, which name the repositories.
+    func loadCatalogTypes() async {
+        var known = (UserDefaults.standard.dictionary(forKey: Self.typesKey) as? [String: String]) ?? [:]
+        let repos = Set(catalogDetails.values.compactMap(\.repo))
+        await withTaskGroup(of: (String, String?).self) { group in
+            for repo in repos where known[repo] == nil {
+                group.addTask {
+                    guard let url = URL(string: "https://huggingface.co/\(repo)/resolve/main/config.json"),
+                          let (data, response) = try? await URLSession.shared.data(from: url),
+                          (response as? HTTPURLResponse)?.statusCode == 200,
+                          let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (repo, nil) }
+                    return (repo, config["model_type"] as? String)
+                }
+            }
+            for await (repo, type) in group { if let type { known[repo] = type } }
+        }
+        UserDefaults.standard.set(known, forKey: Self.typesKey)
+        catalogTypes = Set(repos.compactMap { known[$0] }.map(ModelScanner.familyType))
+    }
+
+    /// Whether a Hugging Face model's type is one the engine's catalog covers: a text-only conversion counts with
+    /// its family. Until the catalog's types are known (first run, offline), the types Nearloop knows stand in.
+    func compatible(_ modelType: String?) -> Bool {
+        guard let modelType else { return false }
+        let type = ModelScanner.familyType(modelType)
+        if !catalogTypes.isEmpty { return catalogTypes.contains(type) }
+        return ModelScanner.qwenTypes.contains(modelType) || ModelScanner.otherTypes.contains(modelType)
+    }
 
     func localModel(for variant: CatalogVariant) -> LocalModel? { model(at: variant.folder.path) }
 

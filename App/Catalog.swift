@@ -194,8 +194,6 @@ enum HuggingFace {
         }
 
         var modelType: String? { config?.modelType ?? tags?.first { ModelScanner.qwenTypes.contains($0) || ModelScanner.otherTypes.contains($0) } }
-        /// Kapitsa downloads Qwen3.5-family MLX repositories by name.
-        var likelyCompatible: Bool { modelType.map(ModelScanner.qwenTypes.contains) ?? false }
         /// Bits per weight of the quantized layers, from the config; else from a "4-bit"-style tag.
         var bits: Int? {
             config?.quantization?.bits ?? tags?.lazy.compactMap { $0.hasSuffix("-bit") ? Int($0.dropLast(4)) : nil }.first
@@ -262,6 +260,9 @@ enum HuggingFace {
         /// A DFlash drafter from Kapitsa's catalog whose shape matches this model, and its size.
         var drafter: String?
         var drafterBytes: Int64 = 0
+        /// The repository is one Kapitsa's catalog downloads from: `kapitsa pull` takes the catalog's own build of
+        /// it (its pinned revision and files), whatever family it is.
+        var catalogBuild = false
     }
 
     /// One request lists the models with their config, parameter counts, dates and base models (the `expand`
@@ -288,22 +289,23 @@ enum HuggingFace {
         let vision: Bool
     }
 
-    /// Read once per repository, when its row appears.
-    @MainActor static var files: [String: Files] = [:]
+    /// Read once per repository, when its row appears or the size sort asks for it; kept in AppStore.hubFiles.
     static func files(_ id: String) async -> Files? {
-        if let known = await MainActor.run(body: { files[id] }) { return known }
+        if let known = await MainActor.run(body: { AppStore.shared.hubFiles[id] }) { return known }
         guard let info = try? await json("https://huggingface.co/api/models/\(id)?blobs=true") else { return nil }
         let siblings = (info["siblings"] as? [[String: Any]]) ?? []
         let bytes = siblings.reduce(Int64(0)) { $0 + Int64(($1["size"] as? Int) ?? 0) }
         guard bytes > 0 else { return nil }
         let names = siblings.compactMap { $0["rfilename"] as? String }
         let result = Files(bytes: bytes, vision: names.contains("preprocessor_config.json"))
-        await MainActor.run { files[id] = result }
+        await MainActor.run { AppStore.shared.hubFiles[id] = result }
         return result
     }
 
-    /// Download size and whether the repository's config is one Kapitsa runs.
-    static func details(_ id: String, drafters: [String] = []) async throws -> Details {
+    /// Download size and whether the repository's config is one Kapitsa runs. `catalog` maps the repositories
+    /// Kapitsa's catalog downloads from to the size of the build it takes there; `types` are the model types that
+    /// catalog covers.
+    static func details(_ id: String, drafters: [String] = [], catalog: [String: Int64] = [:], types: Set<String> = []) async throws -> Details {
         let info = URL(string: "https://huggingface.co/api/models/\(id)?blobs=true")!
         let (data, _) = try await URLSession.shared.data(from: info)
         let object = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
@@ -315,8 +317,19 @@ enum HuggingFace {
               let config = try JSONSerialization.jsonObject(with: configData) as? [String: Any] else {
             return Details(bytes: bytes, problem: "No config.json found. The repository may be gated (set HF_TOKEN) or not an MLX model.")
         }
+        let type = config["model_type"] as? String ?? "unknown"
         guard ModelScanner.family(config) == "qwen" else {
-            return Details(bytes: bytes, problem: "Unsupported architecture: \(config["model_type"] as? String ?? "unknown"). Hugging Face downloads support Qwen3.5-family MLX models.")
+            // Another family: Kapitsa downloads it only as its catalog's build, and runs it only with an engine that knows it.
+            if let size = catalog[id] {
+                var result = Details(bytes: size > 0 ? size : bytes, problem: nil)
+                result.vision = config["vision_config"] != nil
+                result.catalogBuild = true
+                return result
+            }
+            if types.contains(ModelScanner.familyType(type)) {
+                return Details(bytes: bytes, problem: "Kapitsa runs \(type) models, but downloads them from Hugging Face only from the repository its catalog names. Look under Kapitsa Catalog.")
+            }
+            return Details(bytes: bytes, problem: "Unsupported architecture: \(type). The engine in use has no \(type) model in its catalog; Hugging Face downloads of other families take Qwen3.5-family MLX models.")
         }
         var result = Details(bytes: bytes, problem: ModelScanner.quantizationError(config))
         result.vision = config["vision_config"] != nil
