@@ -244,7 +244,7 @@ private struct ModelDetail: View {
         Picker("Context", selection: $store.context) {
             ForEach(model.contextOptions(including: store.context), id: \.self) { Text(model.contextLabel($0).replacingOccurrences(of: " (Max)", with: "")).tag($0) }
         }
-        .pickerStyle(.segmented).labelsHidden().disabled(server.running)
+        .pickerStyle(.segmented).labelsHidden().fixedSize().disabled(server.running)
         .help("Tokens per conversation. Larger contexts use more memory.")
     }
 
