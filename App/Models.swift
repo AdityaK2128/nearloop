@@ -109,6 +109,8 @@ enum ModelScanner {
     static let otherTypes: Set<String> = ["nemotron_h", "flint", "dory", "hy_v4_flash", "inkling2_loop"]
     static let otherClasses = ["NemotronH", "Dory", "Flint", "Clover", "HYV4Flash", "Inkling2Loop"]
     static let ggufArchitectures: Set<String> = ["qwen35", "qwen35moe", "flint"]
+    /// A model type with its text-only suffix dropped: qwen3_5_text runs as qwen3_5 does.
+    static func familyType(_ type: String) -> String { type.hasSuffix("_text") ? String(type.dropLast(5)) : type }
     static let contexts: [(String, Int)] = [("8k", 8192), ("32k", 32768), ("64k", 65536), ("128k", 131072), ("256k", 262144)]
     static let skipped: Set<String> = ["hf-cache", "kapitsa-runtime", "node_modules", "__pycache__", "prefix-cache", "huggingface"]
 

@@ -120,6 +120,7 @@ private struct FamilyCard: View {
 }
 
 private struct HuggingFaceSection: View {
+    @ObservedObject var store = AppStore.shared
     @State private var query = "MLX"
     @State private var results: [HuggingFace.Model] = []
     @State private var searching = false
@@ -134,11 +135,23 @@ private struct HuggingFaceSection: View {
     @State private var latest = 0
 
     var shown: [HuggingFace.Model] {
-        let rows = results.filter { !onlyCompatible || $0.likelyCompatible }
+        let rows = results.filter { !onlyCompatible || store.compatible($0.modelType) }
         guard sort == .size else { return ascending ? rows.reversed() : rows }
-        // Rows with no size estimate go last either way.
-        let sized = rows.filter { $0.estimatedBytes != nil }.sorted { $0.estimatedBytes! > $1.estimatedBytes! }
-        return (ascending ? sized.reversed() : sized) + rows.filter { $0.estimatedBytes == nil }
+        // By the files' size once read (the estimate assumes the config's default bits, which a mixed quantization
+        // does not keep); rows with no size at all go last either way.
+        func size(_ model: HuggingFace.Model) -> Int64? { store.hubFiles[model.id]?.bytes ?? model.estimatedBytes }
+        let sized = rows.filter { size($0) != nil }.sorted { size($0)! > size($1)! }
+        return (ascending ? sized.reversed() : sized) + rows.filter { size($0) == nil }
+    }
+
+    /// Reads every result's files, a few at a time, so the size sort has the exact sizes rather than estimates.
+    private func readSizes(_ models: [HuggingFace.Model]) async {
+        await withTaskGroup(of: Void.self) { group in
+            var queue = models[...]
+            func next() { if let model = queue.popFirst() { group.addTask { _ = await HuggingFace.files(model.id) } } }
+            for _ in 0..<4 { next() }
+            for await _ in group { next() }
+        }
     }
 
     var body: some View {
@@ -164,7 +177,7 @@ private struct HuggingFaceSection: View {
                 Spacer()
                 if !results.isEmpty { Text("\(shown.count) of \(results.count) results").font(.caption).foregroundStyle(.secondary) }
             }
-            Text("Hugging Face downloads support Qwen3.5-family MLX models (4- to 8-bit or BF16). Other model families are available in the Kapitsa Catalog.")
+            Text("Compatible means a model family the engine in use has in its Kapitsa Catalog. Kapitsa downloads Qwen3.5-family MLX models (4- to 8-bit or BF16) from any repository; other families only from the repositories its catalog names, as the catalog's own build.")
                 .font(.caption).foregroundStyle(.secondary)
             if searching { ProgressView().frame(maxWidth: .infinity).padding() }
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
@@ -187,6 +200,7 @@ private struct HuggingFaceSection: View {
                 let found = try await HuggingFace.search(text, sort: sort)
                 guard id == latest else { return }
                 results = found
+                if sort == .size { Task { await readSizes(found) } }
             } catch {
                 guard id == latest else { return }
                 self.error = error.localizedDescription
@@ -208,6 +222,7 @@ private struct HuggingFaceRow: View {
     @State private var files: HuggingFace.Files?
 
     var folder: URL { Kapitsa.downloads.appendingPathComponent(model.id.replacingOccurrences(of: "/", with: "--")) }
+    var compatible: Bool { store.compatible(model.modelType) }
     var owner: String { String(model.id.split(separator: "/").first ?? "") }
     var name: String { String(model.id.split(separator: "/").last ?? "") }
 
@@ -226,6 +241,13 @@ private struct HuggingFaceRow: View {
     }
 
     /// Verified size first, then the files' sizes, then the listing's estimate.
+    /// Bits per weight as the files have them: their size over the Hub's parameter count. Nil until the files are read.
+    private var effectiveBits: Double? {
+        let bytes = (details?.bytes).flatMap { $0 > 0 ? $0 : nil } ?? files?.bytes
+        guard let bytes, let total = model.safetensors?.total, total > 0 else { return nil }
+        return Double(bytes) * 8 / Double(total)
+    }
+
     private var sizeText: (text: String, gigabytes: Double)? {
         if let details, details.bytes > 0 { return (String(format: "%.1f GB", Double(details.bytes) / 1e9), Double(details.bytes) / 1e9) }
         if let files { return (String(format: "%.1f GB", Double(files.bytes) / 1e9), Double(files.bytes) / 1e9) }
@@ -297,10 +319,13 @@ private struct HuggingFaceRow: View {
                     Text(owner).font(.caption).foregroundStyle(.tertiary)
                 }
                 HStack(spacing: 14) {
-                    if let type = model.modelType { Text(type).font(.caption.monospaced()).foregroundStyle(model.likelyCompatible ? .green : .secondary) }
+                    if let type = model.modelType { Text(type).font(.caption.monospaced()).foregroundStyle(compatible ? .green : .secondary) }
                     if let bits = model.bits {
-                        Text(model.groupSize.map { "\(bits)-bit g\($0)" } ?? "\(bits)-bit").foregroundStyle(.secondary)
-                            .help("Quantization from the repository's config.json")
+                        let mixed = effectiveBits.map { $0 < Double(bits) - 0.5 }
+                        Text(mixed == true ? String(format: "mixed, %.1f bpw", effectiveBits!) : model.groupSize.map { "\(bits)-bit g\($0)" } ?? "\(bits)-bit")
+                            .foregroundStyle(.secondary)
+                            .help(mixed == true ? "The config's default is \(bits)-bit, but most layers are quantized lower: bits per weight from the files' size over the parameter count."
+                                                : "Quantization from the repository's config.json")
                     }
                     if let size = sizeText {
                         Text(size.text).monospacedDigit().foregroundStyle(.secondary)
@@ -333,6 +358,10 @@ private struct HuggingFaceRow: View {
                     }.font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                 }
                 if let problem = details?.problem ?? spaceProblem { Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+                if details?.catalogBuild == true, details?.problem == nil {
+                    Text("Downloaded as Kapitsa's catalog build of this repository: its pinned revision and files, with the companions the catalog adds.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 speedups
             }
     }
@@ -381,10 +410,17 @@ private struct HuggingFaceRow: View {
                 checking = true
                 Task {
                     let drafters = Array(Set(store.catalogDetails.values.flatMap(\.drafters))).sorted()
-                    details = try? await HuggingFace.details(model.id, drafters: drafters)
+                    // The repositories the catalog downloads from, with the size of the build it takes there.
+                    var catalog: [String: Int64] = [:]
+                    for (family, item) in store.catalogDetails {
+                        guard let repo = item.repo else { continue }
+                        let gigabytes = store.catalog.first { $0.id == family }?.defaultVariant?.gigabytes ?? 0
+                        catalog[repo] = Int64(gigabytes * 1_000_000_000)
+                    }
+                    details = try? await HuggingFace.details(model.id, drafters: drafters, catalog: catalog, types: store.catalogTypes)
                     if details == nil { details = HuggingFace.Details(bytes: 0, problem: "Repository unavailable.") }
                     checking = false
                 }
-            }.disabled(checking || !model.likelyCompatible).help("Checks size and compatibility before downloading")
+            }.disabled(checking || !compatible).help("Checks size and compatibility before downloading")
     }
 }
