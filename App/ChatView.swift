@@ -210,7 +210,7 @@ private struct ChatThread: View {
         let shown = conversation.messages.filter { $0.role != .tool }
         let writing = chat.generating == conversation.id
         let lastAssistant = shown.last?.role == .assistant ? shown.last?.id : nil
-        return FollowingScroll(growth: Self.growth(shown), restart: "\(conversation.id)-\(shown.filter { $0.role == .user }.count)", writing: writing) {
+        return FollowingScroll(growth: Self.growth(shown), restart: "\(conversation.id)-\(shown.filter { $0.role == .user }.count)", writing: writing, reserveScrollerLane: true) {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     ForEach(shown) { message in
                         if message.role == .user {
@@ -302,14 +302,17 @@ struct AssistantReply: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if !message.reasoning.isEmpty {
-                DisclosureGroup(isExpanded: $showThinking) {
-                    Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
-                } label: {
+                Button { withAnimation(.snappy) { showThinking.toggle() } } label: {
                     HStack(spacing: 6) {
                         if live && message.text.isEmpty && message.toolCalls.isEmpty { ProgressView().controlSize(.mini) }
                         Text(thinkingLabel).font(.callout).foregroundStyle(.secondary)
+                        DisclosureChevron(open: showThinking).padding(.leading, 6)
                     }
+                    .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                if showThinking {
+                    Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             ForEach(message.steps, id: \.callID) { StepRow(step: $0) }
@@ -388,7 +391,7 @@ private struct StepRow: View {
                         if step.kind != .describe {
                             Text(step.kind == .images ? "\(step.images?.count ?? 0) images" : "\(step.results.count) results").foregroundStyle(.tertiary)
                         }
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2).foregroundStyle(.tertiary)
+                        DisclosureChevron(open: expanded).padding(.leading, 2)
                     }
                 }
                 .font(.callout).foregroundStyle(.secondary)
@@ -440,6 +443,15 @@ private struct StepRow: View {
         case .describe: return step.error != nil ? "The image couldn’t be described by \(step.subject)" : step.done ? "Image described by \(step.subject)" : "Describing the image with \(step.subject)…"
         case .other: return step.subject
         }
+    }
+}
+
+/// The small chevron at the end of a row that opens: pointing right, turning down when open.
+struct DisclosureChevron: View {
+    let open: Bool
+    var body: some View {
+        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+            .rotationEffect(.degrees(open ? 90 : 0))
     }
 }
 
@@ -549,7 +561,8 @@ private struct Composer: View {
     @ObservedObject var server = ServerController.shared
     @State private var draft = ""
     @State private var images: [Data] = []
-    @FocusState private var focused: Bool
+    /// Bumped whenever the field should take the keyboard.
+    @State private var focus = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -575,15 +588,9 @@ private struct Composer: View {
                 if draft.isEmpty {
                     Text("Message").font(.body).foregroundStyle(.tertiary).padding(.horizontal, 5).padding(.vertical, 6).allowsHitTesting(false)
                 }
-                TextEditor(text: $draft)
-                    .font(.body).scrollContentBackground(.hidden).scrollIndicators(.never).focused($focused)
+                // Images dropped or pasted into the field become attachments (ComposerEditor); Return sends.
+                ComposerEditor(text: $draft, focus: focus, onSend: send, onImages: { images += $0 })
                     .padding(.vertical, 6)
-                    .onKeyPress(.return, phases: .down) { press in
-                        // Return sends; Shift-Return (or Option-Return) starts a new line.
-                        if press.modifiers.contains(.shift) || press.modifiers.contains(.option) { return .ignored }
-                        send()
-                        return .handled
-                    }
             }
             .frame(minHeight: 34, maxHeight: 200).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
@@ -627,8 +634,8 @@ private struct Composer: View {
             for provider in providers { load(provider) }
             return true
         }
-        .onAppear { focused = true }
-        .onChange(of: chat.selectedID) { _, _ in focused = true }
+        .onAppear { focus += 1 }
+        .onChange(of: chat.selectedID) { _, _ in focus += 1 }
     }
 
     private var canSend: Bool { !chat.busy && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) }
@@ -649,8 +656,15 @@ private struct Composer: View {
         images += panel.urls.compactMap(ChatStore.jpeg(from:))
     }
 
+    /// A drop on the composer outside the field: image data under any image type (a file promise's contents, a
+    /// picture dragged out of a page), else an image file, else an image object.
     private func load(_ provider: NSItemProvider) {
-        if provider.canLoadObject(ofClass: NSImage.self) {
+        if let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) {
+            provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                guard let data, let image = NSImage(data: data), let jpeg = ChatStore.jpeg(from: image) else { return }
+                Task { @MainActor in images.append(jpeg) }
+            }
+        } else if provider.canLoadObject(ofClass: NSImage.self) {
             _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
                 guard let image = object as? NSImage, let data = ChatStore.jpeg(from: image) else { return }
                 Task { @MainActor in images.append(data) }
@@ -724,17 +738,34 @@ struct FollowingScroll<Content: View>: View {
     /// Changes when following should start over: another conversation, or a new message from the user.
     let restart: String
     let writing: Bool
+    /// With legacy scroll bars (a mouse attached, or "Show scroll bars: Always") the bar takes a lane off the content
+    /// when it appears, and a centered column shifts with it. True keeps the content out of that lane whether or not
+    /// the bar is shown, so nothing moves; the scroller itself is left to macOS.
+    var reserveScrollerLane = false
     @ViewBuilder var content: Content
 
     @State private var following = true
     @State private var viewport: CGRect = .zero
     @State private var monitor: Any?
+    @State private var scrollerStyle = NSScroller.preferredScrollerStyle
+
+    /// The lane to keep clear: the legacy scroller's width, nothing for overlay scrollers.
+    private var lane: CGFloat {
+        guard reserveScrollerLane, scrollerStyle == .legacy else { return 0 }
+        return NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
-                    content
+                    // Laid out in the width beside the lane and kept to the leading edge: the same place and
+                    // width whether the bar is there (the clip view narrower by the lane) or not.
+                    if lane > 0, viewport.width > lane {
+                        content.frame(width: viewport.width - lane).frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        content
+                    }
                     // The end of the conversation; how far below the visible area it is says whether the
                     // reader is at the end.
                     Color.clear.frame(height: 1).id("bottom")
@@ -767,6 +798,9 @@ struct FollowingScroll<Content: View>: View {
             .onDisappear {
                 if let monitor { NSEvent.removeMonitor(monitor) }
                 monitor = nil
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+                scrollerStyle = NSScroller.preferredScrollerStyle
             }
             .overlay(alignment: .bottom) {
                 if !following {

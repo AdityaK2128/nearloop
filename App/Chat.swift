@@ -260,7 +260,7 @@ final class ChatStore: ObservableObject {
             // A model found out to drop the attached images (the engine's log says so after the first reply) gets
             // the turn again with the sidecar's descriptions, once.
             if await self.converse(in: id, quick: quick, afterRefusal: false) {
-                await self.converse(in: id, quick: quick, afterRefusal: true)
+                _ = await self.converse(in: id, quick: quick, afterRefusal: true)
             }
         }
     }
