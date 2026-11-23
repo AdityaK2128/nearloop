@@ -48,6 +48,7 @@ struct HomeView: View {
 private struct ServerCard: View {
     @ObservedObject var store: AppStore
     @ObservedObject var server: ServerController
+    @AppStorage("fastProfile") private var fastProfile = false
 
     var title: String {
         switch server.phase {
@@ -107,7 +108,8 @@ private struct ServerCard: View {
 
     @ViewBuilder private var subtitle: some View {
         if let record = server.record {
-            Text("\(contextSummary(record))  ·  127.0.0.1:\(String(record.port))  ·  \(record.apiId)")
+            Text(([contextSummary(record), profileLabel(record), "127.0.0.1:\(String(record.port))", record.apiId]
+                  .compactMap { $0 }).joined(separator: "  ·  "))
         } else if case .failed(let reason) = server.phase {
             Text(reason)
         } else if server.phase == .external {
@@ -124,6 +126,14 @@ private struct ServerCard: View {
         let asked = "\(record.context.uppercased()) context"
         guard let usable = server.stats.usableContext, let full = server.stats.context, usable < full else { return asked }
         return asked + ", " + shortTokens(usable) + " fits in memory"
+    }
+
+    /// The profile this server runs with (nothing for a server started by an earlier build, which did not record
+    /// it); a Mode changed since waits for the next load, so the card says so.
+    private func profileLabel(_ record: ServerRecord) -> String? {
+        guard let fast = record.fast else { return nil }
+        let label = fast ? "Fast" : "Precise"
+        return fast == fastProfile ? label : label + " (\(fastProfile ? "Fast" : "Precise") at next load)"
     }
 
     private func speedNote(_ model: LocalModel) -> String {

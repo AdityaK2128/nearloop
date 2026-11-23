@@ -243,6 +243,8 @@ struct ServerRecord: Codable {
     var logStart: UInt64?
     /// The key the server was started with; it stays in force until the next load.
     var apiKey: String?
+    /// The profile the server was started with (Settings › Engine › Mode); a change there waits for the next load.
+    var fast: Bool?
 }
 
 @MainActor
@@ -368,7 +370,7 @@ final class ServerController: ObservableObject {
         self.terminal = terminal
         record = ServerRecord(pid: process.processIdentifier, executable: binary.path, modelPath: model.path,
                               modelName: model.name, apiId: apiId, context: context, port: port, log: log.path,
-                              logStart: existing, apiKey: key)
+                              logStart: existing, apiKey: key, fast: environment["KAPITSA_PROFILE"] == "fast")
         save()
         phase = .starting
         trackEngine(of: process.processIdentifier)
