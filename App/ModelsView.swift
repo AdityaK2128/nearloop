@@ -172,24 +172,11 @@ private struct ModelDetail: View {
                         .help(bench.running != nil ? "A benchmark is running" : "")
                 }
             }
-            // The sizes and the custom field share a row where they fit; in a narrow window the field drops under
-            // them. A row that could not shrink made the whole page wider than the window, which pushed the sidebar
-            // off the left edge and left an empty overflow button in the toolbar.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 14) {
-                    Text("Context").foregroundStyle(.secondary)
-                    contextPicker
-                    customContextField
-                    Spacer(minLength: 0)
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 14) {
-                        Text("Context").foregroundStyle(.secondary)
-                        contextPicker
-                        Spacer(minLength: 0)
-                    }
-                    customContextField
-                }
+            HStack(spacing: 14) {
+                Text("Context").foregroundStyle(.secondary)
+                contextPicker
+                customContextField
+                Spacer(minLength: 0)
             }
             if let customProblem {
                 Label(customProblem, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
@@ -368,10 +355,7 @@ private struct ModelDetail: View {
                             Text(String(format: "Moving…  %.0f%%", fraction * 100)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
                         }.frame(maxWidth: 360)
                     }
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 10) { fileButtons }
-                        VStack(alignment: .leading, spacing: 8) { fileButtons }
-                    }
+                    HStack(spacing: 10) { fileButtons }
                 }
             }
         }.font(.callout).card()
