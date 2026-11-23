@@ -92,11 +92,19 @@ private struct UsageTile: View {
 /// A year of daily use as a grid of weeks, like a GitHub contribution graph.
 private struct ActivityGrid: View {
     @ObservedObject var usage: UsageStore
-    /// The grid's width, measured, so the 53 weeks always fit the card.
+    /// The width the card is given, so the 53 weeks always fit it. Read inside a GeometryReader, which takes the
+    /// width it is offered whatever its content measures: measuring the grid's own frame fed the cells' size back
+    /// into it, so once the cells had grown for a wide window they never shrank, and in a narrower window the grid
+    /// pushed the whole page (sidebar included) off the left edge.
     @State private var width: CGFloat = 800
     private let gap: CGFloat = 3, labelWidth: CGFloat = 26
-    private var cell: CGFloat { max(6, min(16, (width - labelWidth - gap * 53) / 53)) }
+    private func cellSize(for width: CGFloat) -> CGFloat { max(6, min(16, (width - labelWidth - gap * 53) / 53)) }
+    private var cell: CGFloat { cellSize(for: width) }
     private let calendar = Calendar.current
+    private struct WidthKey: PreferenceKey {
+        static let defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    }
 
     var body: some View {
         let weeks = self.weeks
@@ -109,10 +117,12 @@ private struct ActivityGrid: View {
                 Spacer()
                 legend
             }
-            VStack(alignment: .leading, spacing: 6) {
-                    monthLabels(weeks)
+            GeometryReader { proxy in
+                let cell = cellSize(for: proxy.size.width)
+                VStack(alignment: .leading, spacing: 6) {
+                    monthLabels(weeks, cell: cell)
                     HStack(alignment: .top, spacing: gap) {
-                        weekdayLabels
+                        weekdayLabels(cell: cell)
                         ForEach(weeks.indices, id: \.self) { index in
                             VStack(spacing: gap) {
                                 ForEach(0..<7, id: \.self) { row in
@@ -129,13 +139,12 @@ private struct ActivityGrid: View {
                             }
                         }
                     }
+                }
+                .preference(key: WidthKey.self, value: proxy.size.width)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(GeometryReader { proxy in
-                Color.clear
-                    .onAppear { width = proxy.size.width }
-                    .onChange(of: proxy.size.width) { _, new in width = new }
-            })
+            // The reader's height follows the cells, which follow the width it last reported.
+            .frame(height: 10 + 6 + 7 * cell + 6 * gap)
+            .onPreferenceChange(WidthKey.self) { width = $0 }
         }.card()
     }
 
@@ -171,7 +180,7 @@ private struct ActivityGrid: View {
         }
     }
 
-    private var weekdayLabels: some View {
+    private func weekdayLabels(cell: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: gap) {
             // Mon, Wed and Fri, as on GitHub, wherever the week starts in this locale.
             ForEach(0..<7, id: \.self) { row in
@@ -183,7 +192,7 @@ private struct ActivityGrid: View {
         }
     }
 
-    private func monthLabels(_ weeks: [[Date?]]) -> some View {
+    private func monthLabels(_ weeks: [[Date?]], cell: CGFloat) -> some View {
         HStack(spacing: gap) {
             Color.clear.frame(width: labelWidth, height: 10)
             ForEach(weeks.indices, id: \.self) { index in
