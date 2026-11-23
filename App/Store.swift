@@ -261,6 +261,18 @@ final class AppStore: ObservableObject {
 
     func localModel(for variant: CatalogVariant) -> LocalModel? { model(at: variant.folder.path) }
 
+    /// The Hugging Face page of a library model, when where it came from is known: a catalog download (its family's
+    /// repository), or a Hub download, which Kapitsa saves in a folder named owner--name.
+    func modelCard(for model: LocalModel) -> URL? {
+        let folder = URL(fileURLWithPath: model.path).standardizedFileURL.path
+        if let family = catalog.first(where: { $0.variants.contains { $0.folder.standardizedFileURL.path == folder } }),
+           let card = catalogDetails[family.id]?.modelCard { return card }
+        let parts = URL(fileURLWithPath: folder).lastPathComponent.components(separatedBy: "--")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty && $0.unicodeScalars.allSatisfy(allowed.contains) }) else { return nil }
+        return URL(string: "https://huggingface.co/\(parts[0])/\(parts[1])")
+    }
+
     func benchmark(for model: LocalModel) -> BenchResult? { BenchmarkStore.best(benchmarks, for: model) }
 
     func clampContext() {

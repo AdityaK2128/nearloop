@@ -107,6 +107,7 @@ private struct ModelDetail: View {
 
     var isLoaded: Bool { server.record?.modelPath == model.path }
     var relocating: Bool { store.relocations[model.path] != nil }
+    var readme: URL { URL(fileURLWithPath: model.path).appendingPathComponent("README.md") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -124,6 +125,12 @@ private struct ModelDetail: View {
                     if isLoaded { Badge(text: "Loaded", color: .green, symbol: "bolt.fill") }
                 }
                 Text(model.reason).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let card = store.modelCard(for: model) {
+                    Link("Model card ↗", destination: card).font(.callout).help(card.absoluteString)
+                } else if FileManager.default.fileExists(atPath: readme.path) {
+                    Button("Model card") { NSWorkspace.shared.open(readme) }
+                        .buttonStyle(.link).font(.callout).help("Opens README.md in the model's folder")
+                }
                 if model.needsEngine {
                     Button("Choose Engine…") {
                         UserDefaults.standard.set(SettingsPage.Category.engine.rawValue, forKey: "settingsCategory")
