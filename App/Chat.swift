@@ -70,13 +70,16 @@ struct ChatToolCall: Codable, Hashable {
 
 /// What one tool call did, shown under the reply that made it.
 struct ChatStep: Codable, Hashable {
-    enum Kind: String, Codable { case search, read, images, other }
+    /// `describe`: the image sidecar describing the user's attachments for a model that can't read them.
+    enum Kind: String, Codable { case search, read, images, describe, other }
     let callID: String
     let kind: Kind
     let subject: String
     var results: [WebSearch.Result] = []
     /// Optional, so chats saved before image search still load.
     var images: [WebSearch.ImageResult]?
+    /// What the sidecar said about the images, to read under the step.
+    var text: String?
     var error: String?
     var done = false
 }
@@ -89,6 +92,9 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     var reasoning = ""
     /// JPEG images the user attached.
     var images: [Data] = []
+    /// The sidecar's description of each image, when the model couldn't read them: the model gets these in the
+    /// images' place, in this turn and every later one.
+    var imageDescriptions: [String]?
     var toolCalls: [ChatToolCall] = []
     var toolCallID: String?
     var steps: [ChatStep] = []
@@ -251,49 +257,159 @@ final class ChatStore: ObservableObject {
         task = Task { [weak self] in
             guard let self else { return }
             defer { self.generating = nil; self.save(id) }
-            do {
-                try await AppStore.shared.ensureServer(purpose: quick ? "Quick Chat" : "Chat", context: Self.context,
-                                                       model: quick ? AppStore.shared.quickChatModel : nil)
-                try Task.checkCancellation()
-            } catch is CancellationError {
-                // Stopped while the model loaded; the model keeps loading for next time.
-                self.append(ChatMessage(role: .assistant, error: "Stopped."), to: id)
-                return
-            } catch {
-                self.append(ChatMessage(role: .assistant, error: error.localizedDescription), to: id)
-                return
-            }
-            // Failed searches in a row: after two, the model answers with what it has instead of trying again.
-            var failures = 0, finishedRetry = false
-            for round in 0..<(self.maxRounds + 1) {
-                let tools = self.webSearch && round < self.maxRounds - 1 && failures < 2 && !finishedRetry
-                guard let messageID = self.append(ChatMessage(role: .assistant), to: id) else { return }
-                let calls: [ChatToolCall]
-                do {
-                    calls = try await self.stream(id, into: messageID, tools: tools, finishing: self.webSearch && !tools, searchFailed: failures >= 2)
-                } catch is CancellationError {
-                    self.update(id, messageID) { if $0.text.isEmpty && $0.reasoning.isEmpty { $0.error = "Stopped." } }
-                    return
-                } catch let error as URLError where error.code == .cancelled {
-                    self.update(id, messageID) { if $0.text.isEmpty && $0.reasoning.isEmpty { $0.error = "Stopped." } }
-                    return
-                } catch {
-                    self.update(id, messageID) { $0.error = error.localizedDescription }
-                    return
-                }
-                // A last round that wrote no answer (only a call as text, now hidden) gets one more try.
-                if !tools, self.webSearch, !finishedRetry, let message = self.message(id, messageID), message.text.isEmpty, message.toolCalls.isEmpty {
-                    finishedRetry = true
-                    self.conversations[self.index(of: id)!].messages.removeAll { $0.id == messageID }
-                    continue
-                }
-                guard tools, !calls.isEmpty else { return }
-                for call in calls {
-                    if Task.isCancelled { return }
-                    if await self.run(call, in: id, from: messageID) { failures = 0 } else { failures += 1 }
-                }
+            // A model found out to drop the attached images (the engine's log says so after the first reply) gets
+            // the turn again with the sidecar's descriptions, once.
+            if await self.converse(in: id, quick: quick, afterRefusal: false) {
+                await self.converse(in: id, quick: quick, afterRefusal: true)
             }
         }
+    }
+
+    /// One reply: loads the model if need be, describes attached images the model can't read, then streams,
+    /// running the web tools the model asks for until it answers. True when the reply has to be made again
+    /// because the model turned out not to read the images it was sent.
+    private func converse(in id: UUID, quick: Bool, afterRefusal: Bool) async -> Bool {
+        do {
+            try await AppStore.shared.ensureServer(purpose: quick ? "Quick Chat" : "Chat", context: Self.context,
+                                                   model: quick ? AppStore.shared.quickChatModel : nil)
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            // Stopped while the model loaded; the model keeps loading for next time.
+            append(ChatMessage(role: .assistant, error: "Stopped."), to: id)
+            return false
+        } catch {
+            append(ChatMessage(role: .assistant, error: error.localizedDescription), to: id)
+            return false
+        }
+        // The image sidecar: a model that can't read the attached images gets their descriptions instead.
+        var pending: UUID?
+        let question = conversations.first { $0.id == id }?.messages.last { $0.role == .user }
+        let attached = question.map { !$0.images.isEmpty && $0.imageDescriptions == nil } ?? false
+        if let question, attached, ImageSidecar.enabled, afterRefusal || imageSupport() == false {
+            guard let messageID = append(ChatMessage(role: .assistant), to: id) else { return false }
+            pending = messageID
+            await describeImages(of: question.id, in: id, from: messageID)
+            if Task.isCancelled { update(id, messageID) { $0.error = "Stopped." }; return false }
+        }
+        let refusedBefore = ServerController.shared.stats.imagesRefused
+        // Failed searches in a row: after two, the model answers with what it has instead of trying again.
+        var failures = 0, finishedRetry = false
+        for round in 0..<(maxRounds + 1) {
+            let tools = webSearch && round < maxRounds - 1 && failures < 2 && !finishedRetry
+            let messageID: UUID
+            if let reused = pending { messageID = reused; pending = nil } else {
+                guard let fresh = append(ChatMessage(role: .assistant), to: id) else { return false }
+                messageID = fresh
+            }
+            let calls: [ChatToolCall]
+            do {
+                calls = try await stream(id, into: messageID, tools: tools, finishing: webSearch && !tools, searchFailed: failures >= 2)
+            } catch is CancellationError {
+                update(id, messageID) { if $0.text.isEmpty && $0.reasoning.isEmpty { $0.error = "Stopped." } }
+                return false
+            } catch let error as URLError where error.code == .cancelled {
+                update(id, messageID) { if $0.text.isEmpty && $0.reasoning.isEmpty { $0.error = "Stopped." } }
+                return false
+            } catch {
+                update(id, messageID) { $0.error = error.localizedDescription }
+                return false
+            }
+            // The first request carried the images: did the engine drop them? Then this model can't read images;
+            // remember that, take the reply back, and let the sidecar describe them.
+            if round == 0, attached, pending == nil, !afterRefusal, ImageSidecar.enabled, let question,
+               question.imageDescriptions == nil, await imagesRefused(since: refusedBefore) {
+                if let index = index(of: id), let at = conversations[index].messages.firstIndex(where: { $0.id == question.id }) {
+                    conversations[index].messages.removeSubrange((at + 1)...)
+                }
+                return true
+            }
+            // A last round that wrote no answer (only a call as text, now hidden) gets one more try.
+            if !tools, webSearch, !finishedRetry, let message = message(id, messageID), message.text.isEmpty, message.toolCalls.isEmpty {
+                finishedRetry = true
+                conversations[index(of: id)!].messages.removeAll { $0.id == messageID }
+                continue
+            }
+            guard tools, !calls.isEmpty else { return false }
+            for call in calls {
+                if Task.isCancelled { return false }
+                if await run(call, in: id, from: messageID) { failures = 0 } else { failures += 1 }
+            }
+        }
+        return false
+    }
+
+    // MARK: Image sidecar
+
+    /// Whether the loaded model reads images: true, false, or nil when nothing says yet. The engine's log is the
+    /// authority (", images on" at engine ready; a request's images "left out"); what it said last time about this
+    /// model is remembered; a model without a vision tower in its config can't read images at all.
+    func imageSupport() -> Bool? {
+        let server = ServerController.shared
+        guard server.running else { return nil }
+        let path = server.record?.modelPath
+        if server.owned, let known = server.stats.readsImages {
+            if let path, Prefs.modelReadsImages[path] != known { var all = Prefs.modelReadsImages; all[path] = known; Prefs.modelReadsImages = all }
+            return known
+        }
+        guard let path else { return nil }
+        if let remembered = Prefs.modelReadsImages[path] { return remembered }
+        if let model = AppStore.shared.model(at: path), !model.vision { return false }
+        return nil
+    }
+
+    /// Whether the engine dropped a request's images since `count`: its log is read again, with a moment's grace
+    /// for the line to land, and the model is remembered as one that can't read images.
+    private func imagesRefused(since count: Int) async -> Bool {
+        let server = ServerController.shared
+        guard server.owned else { return false }
+        for _ in 0..<6 {
+            server.refreshLog()
+            if server.stats.imagesRefused > count { break }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        guard server.stats.imagesRefused > count else { return false }
+        if let path = server.record?.modelPath { var all = Prefs.modelReadsImages; all[path] = false; Prefs.modelReadsImages = all }
+        return true
+    }
+
+    /// Has the sidecar describe the user's images, with their question and a line about the conversation; the
+    /// descriptions are kept on the message, and a step under the reply says what the sidecar saw.
+    private func describeImages(of userID: UUID, in id: UUID, from messageID: UUID) async {
+        guard let index = index(of: id), let at = conversations[index].messages.firstIndex(where: { $0.id == userID }) else { return }
+        let question = conversations[index].messages[at]
+        let callID = "describe-\(UUID().uuidString.prefix(8))"
+        update(id, messageID) { $0.steps.append(ChatStep(callID: callID, kind: .describe, subject: ImageSidecar.modelName)) }
+        do {
+            let descriptions = try await ImageSidecar.describe(question.images, question: question.text, context: sidecarContext(id, before: userID))
+            if let index = self.index(of: id), let at = conversations[index].messages.firstIndex(where: { $0.id == userID }) {
+                conversations[index].messages[at].imageDescriptions = descriptions
+            }
+            step(id, messageID, callID) { $0.text = descriptions.joined(separator: "\n\n"); $0.done = true }
+        } catch {
+            step(id, messageID, callID) { $0.error = error.localizedDescription; $0.done = true }
+        }
+        save(id)
+    }
+
+    /// What the vision model should know: who is asking and why, and the last few turns before the question.
+    private func sidecarContext(_ id: UUID, before userID: UUID) -> String {
+        var line = "The user is chatting with a text-only AI assistant in Nearloop, a Mac app, and attached this image to their message. The assistant will answer from your description alone, so cover what the question needs and transcribe any text, numbers and labels exactly."
+        guard let conversation = conversations.first(where: { $0.id == id }), let at = conversation.messages.firstIndex(where: { $0.id == userID }) else { return line }
+        let recent = conversation.messages[..<at].filter { $0.role != .tool && !$0.text.isEmpty }.suffix(3).map { message in
+            let text = message.text.replacingOccurrences(of: "\n", with: " ")
+            return (message.role == .user ? "User: " : "Assistant: ") + (text.count > 200 ? String(text.prefix(200)) + "…" : text)
+        }
+        if !recent.isEmpty { line += " Earlier in the conversation: " + recent.joined(separator: " / ") }
+        return line
+    }
+
+    /// A user message as text for the model: its words, and in place of images it couldn't read, their descriptions.
+    nonisolated static func textWithDescriptions(_ message: ChatMessage) -> String {
+        guard let descriptions = message.imageDescriptions, !descriptions.isEmpty else { return message.text }
+        let notes = descriptions.enumerated().map { index, description in
+            "[Attached image\(descriptions.count > 1 ? " \(index + 1)" : ""), as described by \(ImageSidecar.modelName), a vision model running alongside you: \(description)]"
+        }
+        return (message.text.isEmpty ? notes : [message.text] + notes).joined(separator: "\n\n")
     }
 
     /// Chat suits 64K of context; a model with less gets its largest preset.
@@ -416,8 +532,8 @@ final class ChatStore: ObservableObject {
         for message in conversation.messages {
             switch message.role {
             case .user:
-                if message.images.isEmpty {
-                    messages.append(["role": "user", "content": message.text])
+                if message.images.isEmpty || message.imageDescriptions != nil {
+                    messages.append(["role": "user", "content": Self.textWithDescriptions(message)])
                 } else {
                     var parts: [[String: Any]] = message.images.map {
                         ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\($0.base64EncodedString())"]]
@@ -566,7 +682,8 @@ final class ChatStore: ObservableObject {
         // Earlier turns: what the user asked and what was answered, without the tool traffic.
         for message in conversation.messages[..<lastUser] {
             if message.role == .user {
-                messages.append(["role": "user", "content": message.text.isEmpty ? "(an image)" : message.text])
+                let text = Self.textWithDescriptions(message)
+                messages.append(["role": "user", "content": text.isEmpty ? "(an image)" : text])
             } else if message.role == .assistant, message.toolCalls.isEmpty, !message.text.isEmpty {
                 messages.append(["role": "assistant", "content": message.text])
             }
@@ -589,7 +706,7 @@ final class ChatStore: ObservableObject {
             }
         }
         let question = conversation.messages.indices.contains(lastUser) ? conversation.messages[lastUser] : nil
-        var ask = question?.text ?? ""
+        var ask = question.map(Self.textWithDescriptions) ?? ""
         if lines.isEmpty && images.isEmpty {
             ask += searchFailed
                 ? "\n\n(Web search wasn’t working just now, so nothing could be checked online. Answer from what you know, and say clearly that recent details may be out of date.)"
@@ -601,7 +718,7 @@ final class ChatStore: ObservableObject {
             if !images.isEmpty { ask += "If pictures help, include up to four as Markdown images: ![short description](image_url), with image_url exactly as listed. " }
             ask += "Say what these sources didn’t settle."
         }
-        if let question, !question.images.isEmpty {
+        if let question, !question.images.isEmpty, question.imageDescriptions == nil {
             var parts: [[String: Any]] = question.images.map { ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\($0.base64EncodedString())"]] }
             parts.append(["type": "text", "text": ask])
             messages.append(["role": "user", "content": parts])

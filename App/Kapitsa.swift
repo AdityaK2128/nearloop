@@ -50,6 +50,17 @@ enum Prefs {
         get { (defaults.dictionary(forKey: "agentPromptTokens") as? [String: Int]) ?? [:] }
         set { defaults.set(newValue, forKey: "agentPromptTokens") }
     }
+    /// Settings › Images: describe images with the vision sidecar for models that can't read them.
+    static var imageSidecar: Bool {
+        get { defaults.bool(forKey: "imageSidecar") }
+        set { defaults.set(newValue, forKey: "imageSidecar") }
+    }
+    /// Whether each model read images when it last ran here, by model path: from the engine's log ("images on" at
+    /// engine ready; "left out: this model can't read images" on a request).
+    static var modelReadsImages: [String: Bool] {
+        get { (defaults.dictionary(forKey: "modelReadsImages") as? [String: Bool]) ?? [:] }
+        set { defaults.set(newValue, forKey: "modelReadsImages") }
+    }
     static var diskCache: String { defaults.string(forKey: "diskCache").flatMap { $0.isEmpty ? nil : $0 } ?? "auto" }
     static var shareOnNetwork: Bool { defaults.bool(forKey: "shareOnNetwork") }
     static var terminal: String { defaults.string(forKey: "terminalApp") ?? "terminal" }

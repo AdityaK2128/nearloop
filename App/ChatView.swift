@@ -377,15 +377,17 @@ private struct StepRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button { if !step.results.isEmpty || !(step.images ?? []).isEmpty { withAnimation(.snappy) { expanded.toggle() } } } label: {
+            Button { if expandable { withAnimation(.snappy) { expanded.toggle() } } } label: {
                 HStack(spacing: 7) {
                     if !step.done { ProgressView().controlSize(.mini) } else {
-                        Image(systemName: step.error != nil ? "exclamationmark.triangle" : step.kind == .read ? "doc.text" : step.kind == .images ? "photo.on.rectangle" : "magnifyingglass")
+                        Image(systemName: step.error != nil ? "exclamationmark.triangle" : step.kind == .read ? "doc.text" : step.kind == .images ? "photo.on.rectangle" : step.kind == .describe ? "eye" : "magnifyingglass")
                             .foregroundStyle(step.error != nil ? Color.orange : Color.secondary)
                     }
                     Text(title).lineLimit(1).truncationMode(.middle)
-                    if !step.results.isEmpty || !(step.images ?? []).isEmpty {
-                        Text(step.kind == .images ? "\(step.images?.count ?? 0) images" : "\(step.results.count) results").foregroundStyle(.tertiary)
+                    if expandable {
+                        if step.kind != .describe {
+                            Text(step.kind == .images ? "\(step.images?.count ?? 0) images" : "\(step.results.count) results").foregroundStyle(.tertiary)
+                        }
                         Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
@@ -395,6 +397,11 @@ private struct StepRow: View {
             }.buttonStyle(.plain)
             if let error = step.error {
                 Text(error).font(.caption).foregroundStyle(.secondary).padding(.leading, 10).fixedSize(horizontal: false, vertical: true)
+            }
+            // What the sidecar saw, for the user to check against the picture.
+            if expanded, step.kind == .describe, let text = step.text, !text.isEmpty {
+                Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    .padding(.leading, 12).fixedSize(horizontal: false, vertical: true)
             }
             if expanded, let images = step.images, !images.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -421,11 +428,16 @@ private struct StepRow: View {
         }
     }
 
+    private var expandable: Bool {
+        !step.results.isEmpty || !(step.images ?? []).isEmpty || (step.kind == .describe && !(step.text ?? "").isEmpty)
+    }
+
     private var title: String {
         switch step.kind {
         case .search: return (step.done ? "Searched " : "Searching ") + "“\(step.subject)”"
         case .read: return (step.done ? "Read " : "Reading ") + (URL(string: step.subject)?.host?.replacingOccurrences(of: "www.", with: "") ?? step.subject)
         case .images: return (step.done ? "Found images of " : "Finding images of ") + "“\(step.subject)”"
+        case .describe: return step.error != nil ? "The image couldn’t be described by \(step.subject)" : step.done ? "Image described by \(step.subject)" : "Describing the image with \(step.subject)…"
         case .other: return step.subject
         }
     }
@@ -594,6 +606,20 @@ private struct Composer: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.primary.opacity(0.05)))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.08)))
+        .overlay(alignment: .bottomLeading) {
+            // Images attached for a model known not to read them, with the sidecar off: one line on what would help.
+            if !images.isEmpty, !ImageSidecar.enabled, chat.imageSupport() == false {
+                HStack(spacing: 4) {
+                    Image(systemName: "eye.slash")
+                    Text("\(server.record?.modelName ?? "This model") can’t read images.")
+                    Button("Turn on the image sidecar in Settings › Images") {
+                        UserDefaults.standard.set(SettingsPage.Category.images.rawValue, forKey: "settingsCategory")
+                        AppStore.shared.page = .settings
+                    }.buttonStyle(.link)
+                }
+                .font(.caption).foregroundStyle(.secondary).padding(.leading, 4).offset(y: 18)
+            }
+        }
         .frame(maxWidth: 780)
         .padding(.horizontal, 28).padding(.bottom, 18).padding(.top, 6)
         .frame(maxWidth: .infinity)

@@ -5,13 +5,14 @@ import SwiftUI
 /// Settings, as a page of the main window: categories on the left, the chosen one's form on the right.
 struct SettingsPage: View {
     enum Category: String, CaseIterable, Identifiable {
-        case general, shortcut, chat, server, engine, memory, storage, about
+        case general, shortcut, chat, images, server, engine, memory, storage, about
         var id: String { rawValue }
         var title: String {
             switch self {
             case .general: return "General"
             case .shortcut: return "Quick Chat"
             case .chat: return "Web Search"
+            case .images: return "Images"
             case .server: return "Server"
             case .engine: return "Engine"
             case .memory: return "Memory"
@@ -24,6 +25,7 @@ struct SettingsPage: View {
             case .general: return "gearshape"
             case .shortcut: return "command"
             case .chat: return "globe"
+            case .images: return "eye"
             case .server: return "server.rack"
             case .engine: return "cpu"
             case .memory: return "memorychip"
@@ -68,6 +70,7 @@ struct SettingsPage: View {
                 case .general: GeneralSettings()
                 case .shortcut: QuickChatSettings()
                 case .chat: ChatSettings()
+                case .images: ImagesSettings()
                 case .server: ServerSettings()
                 case .engine: EngineSettings()
                 case .memory: MemorySettings()
@@ -576,3 +579,139 @@ struct EngineSettings: View {
     }
 }
 
+
+/// Settings › Images: the vision sidecar (Gemma 3 4B on llama.cpp) that describes images for models that can't
+/// read them, in Chat and for the coding agents through the `image_tool` command.
+struct ImagesSettings: View {
+    @ObservedObject private var download = ImageSidecarDownload.shared
+    @State private var on = Prefs.imageSidecar
+    @State private var downloaded = ImageSidecar.downloaded
+    @State private var onDisk: Int64 = 0
+    @State private var toolState = ImageSidecar.toolState
+    @State private var instructed: [String: Bool] = [:]
+    @State private var serverUp = false
+
+    private var home: String { FileManager.default.homeDirectoryForCurrentUser.path }
+    private func short(_ url: URL) -> String { url.path.hasPrefix(home + "/") ? "~" + url.path.dropFirst(home.count) : url.path }
+    private func gigabytes(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1e9) }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Image Sidecar for Models That Can’t Read Images", isOn: Binding(get: { on }, set: toggle))
+                    .disabled(!downloaded && !on)
+            } footer: {
+                Text(downloaded || on
+                     ? "When the loaded model drops an attached image (Kapitsa says so in its log), Chat has \(ImageSidecar.modelName) describe it, with your question and what the conversation is about, and sends the model the description in the image’s place; a note under the reply shows what the sidecar saw. The coding agents get the same through the image_tool command. Everything runs on this Mac."
+                     : "Download the vision helper below to turn this on. Models that read images themselves, such as Inkling 2 on an engine with its vision tower, are left alone.")
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                LabeledContent("Vision Model") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(ImageSidecar.modelName) · QAT Q4_0 · ggml-org")
+                        Text("\(gigabytes(ImageSidecar.modelBytes + ImageSidecar.projectorBytes)) with its image projector").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("Runner") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("llama.cpp \(ImageSidecar.runnerBuild) · llama-server")
+                        Text("\(ByteCountFormatter.string(fromByteCount: ImageSidecar.runnerBytes, countStyle: .file)) · macOS arm64 release").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("On Disk") {
+                    Text(downloaded ? "Downloaded · \(gigabytes(onDisk))" : onDisk > 0 ? "Partial · \(gigabytes(onDisk)) of \(gigabytes(ImageSidecar.totalBytes))" : "Not downloaded")
+                        .foregroundStyle(.secondary)
+                }
+                if downloaded {
+                    LabeledContent("Vision Server") {
+                        HStack(spacing: 8) {
+                            Text(serverUp ? "Running on 127.0.0.1:8765 · stops after 5 idle minutes" : "Not running · starts with the first image").foregroundStyle(.secondary)
+                            if serverUp { Button("Stop") { ImageSidecar.stopServer(); Task { await checkServer() } }.controlSize(.small) }
+                        }
+                    }
+                }
+                if let job = download.job, job.showsProgress { DownloadProgressLine(job: job) }
+                HStack {
+                    Spacer()
+                    if download.busy {
+                        Button("Cancel") { download.cancel() }
+                    } else if downloaded {
+                        Button("Remove") { download.remove(); refresh() }
+                    } else {
+                        let resuming = download.job.map { job -> Bool in if case .failed = job.state { return true }; return job.state == .paused } ?? false
+                        Button(resuming ? "Resume Download" : "Download \(gigabytes(ImageSidecar.totalBytes))") { download.start() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            } footer: {
+                Text("Kept in \(short(ImageSidecar.folder)). The model comes from huggingface.co/\(ImageSidecar.modelRepo), the runner from llama.cpp’s GitHub releases; both resume where they stopped.")
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                LabeledContent("Command") {
+                    HStack(spacing: 8) {
+                        switch toolState {
+                        case "installed": Label(short(ImageSidecar.toolURL), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        case "outdated": Label("\(short(ImageSidecar.toolURL)) · older copy", systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+                        case "foreign": Label("\(short(ImageSidecar.toolURL)) is another program", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        default: Text("Not installed").foregroundStyle(.secondary)
+                        }
+                        Button(toolState == "installed" ? "Reinstall" : toolState == "outdated" ? "Update" : "Install") {
+                            do { try ImageSidecar.installTool() } catch { AppStore.shared.errorMessage = error.localizedDescription }
+                            refresh()
+                        }.controlSize(.small).disabled(toolState == "foreign")
+                    }
+                }
+                ForEach(ImageSidecar.instructionFiles, id: \.agent) { file in
+                    LabeledContent(file.agent) {
+                        HStack(spacing: 6) {
+                            Text(short(file.url)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Image(systemName: instructed[file.agent] == true ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(instructed[file.agent] == true ? Color.green : Color.secondary)
+                                .help(instructed[file.agent] == true ? "Has the image_tool line" : "No image_tool line")
+                        }
+                    }
+                }
+            } footer: {
+                Text("image_tool <file> \"<question>\" \"<context>\" prints what the vision model sees. While the sidecar is on, each agent’s global instruction file carries one line (marked \(ImageSidecar.marker)) telling it to run the command for an image it can’t see; off takes exactly that line out again. The agents start the vision server themselves, so Nearloop needn’t be open.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { refresh() }
+        .onChange(of: download.revision) { _, _ in refresh() }
+        .task {
+            while !Task.isCancelled {
+                await checkServer()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    private func toggle(_ value: Bool) {
+        do {
+            try ImageSidecar.setEnabled(value)
+        } catch {
+            AppStore.shared.errorMessage = error.localizedDescription
+        }
+        on = Prefs.imageSidecar
+        refresh()
+    }
+
+    private func refresh() {
+        on = Prefs.imageSidecar
+        downloaded = ImageSidecar.downloaded
+        toolState = ImageSidecar.toolState
+        instructed = Dictionary(uniqueKeysWithValues: ImageSidecar.instructionFiles.map { ($0.agent, ImageSidecar.hasInstruction($0.url)) })
+        Task.detached {
+            let bytes = ImageSidecar.bytesOnDisk
+            await MainActor.run { onDisk = bytes }
+        }
+    }
+
+    private func checkServer() async {
+        let up = await ImageSidecar.serverRunning()
+        serverUp = up
+    }
+}
