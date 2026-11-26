@@ -66,7 +66,8 @@ struct AgentsView: View {
     private func label(for model: LocalModel) -> String {
         guard let result = store.benchmark(for: model) else { return model.name }
         guard result.toolsPass else { return model.name + "  (no tool calling)" }
-        return model.name + String(format: "  (%.0f tok/s)", result.writing ?? 0)
+        guard let speed = result.writing else { return model.name }
+        return model.name + String(format: "  (%.0f tok/s)", speed)
     }
 
     private var binOnPath: Bool {

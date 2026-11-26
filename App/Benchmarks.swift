@@ -16,11 +16,18 @@ struct BenchResult: Identifiable, Hashable {
     let peakGB: Double?
     let decoding: String
     let flags: [String]
+    let invalid: [String]
 
     var toolsPass: Bool { toolCalls == "pass" }
     var contention: Bool { flags.contains { $0.contains("CONTENTION") } }
     var repetition: Bool { flags.contains { $0.contains("repetition") } }
     var usesDrafter: Bool { decoding.contains("DFlash") }
+    /// Why the generation speed is missing: every decode run was thrown out (the median is null in the file).
+    var noGeneration: String? {
+        guard writing == nil else { return nil }
+        let why = invalid.first { $0.hasPrefix("decode: ") }.map { String($0.dropFirst("decode: ".count)) }
+        return "No valid generation run" + (why.map { ": " + $0 } ?? "")
+    }
 
     init?(file: URL, modelPath: String?) {
         guard let data = try? Data(contentsOf: file),
@@ -43,6 +50,7 @@ struct BenchResult: Identifiable, Hashable {
         peakGB = results["peak_memory_gb"] as? Double
         decoding = model["decoding_detail"] as? String ?? model["decoding"] as? String ?? ""
         flags = json["flags"] as? [String] ?? []
+        invalid = json["invalid"] as? [String] ?? []
     }
 }
 

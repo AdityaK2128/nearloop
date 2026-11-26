@@ -297,6 +297,7 @@ private struct ModelDetail: View {
                     Tile("Tool Calling", result.toolsPass ? "Pass" : "Fail", result.toolsPass ? "Agent-ready" : "Not agent-ready")
                 }
                 Text("Peak memory \(result.peakGB.map { String(format: "%.1f GB", $0) } ?? "—") · \(result.decoding)" +
+                     (result.noGeneration.map { " · " + $0 } ?? "") +
                      (result.repetition ? " · Repetition detected" : "") + (result.contention ? " · GPU contention during run" : ""))
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
