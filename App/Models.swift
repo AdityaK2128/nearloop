@@ -226,6 +226,15 @@ enum ModelScanner {
             row.needsEngine = true
             return row
         }
+        // A download `kapitsa pull` has not finished (paused, or still running): the files still being fetched sit
+        // in .kapitsa/parts as .part files, and the model's own files may already look whole (Flint ships no
+        // model.safetensors.index.json, so a missing shard goes unnoticed below).
+        let parts = (try? fm.contentsOfDirectory(atPath: url.appendingPathComponent(".kapitsa/parts").path)) ?? []
+        if parts.contains(where: { $0.hasSuffix(".part") }) {
+            row.status = .incomplete
+            row.reason = "Download not finished: resume it in Discover, or `kapitsa pull \(url.lastPathComponent)`."
+            return row
+        }
         let index = readJSON(url.appendingPathComponent("model.safetensors.index.json"))
         let shards = Set(((index?["weight_map"] as? [String: String]) ?? [:]).values)
         let missing = shards.filter { !fm.fileExists(atPath: url.appendingPathComponent($0).path) }.sorted()
