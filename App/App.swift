@@ -172,7 +172,7 @@ struct MenuBarContent: View {
         }
         Divider()
         Menu("Launch Agent") {
-            ForEach(Agents.catalog.filter { store.agents[$0.id] != nil }) { agent in
+            ForEach(store.agentCatalog.filter { store.agents[$0.id] != nil }) { agent in
                 Menu(agent.name) {
                     Button("Open Project…") { NSApp.activate(ignoringOtherApps: true); store.launch(agent.id) }
                     ForEach(Prefs.recentProjects, id: \.self) { path in

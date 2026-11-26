@@ -60,6 +60,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var libraries = Prefs.libraries
     @Published private(set) var agents: [String: String] = [:]
     @Published private(set) var agentVersions: [String: String] = [:]
+    /// Kapitsa's agents and the user's own (`Agents.catalog`), refreshed by each scan and each edit.
+    @Published private(set) var agentCatalog: [AgentInfo] = Agents.catalog
     @Published private(set) var catalog: [CatalogFamily] = []
     @Published private(set) var catalogError: String?
     /// Per family: its Hugging Face repository and the files that speed it up, from Kapitsa's catalog.
@@ -165,15 +167,17 @@ final class AppStore: ObservableObject {
         let roots = allLibraries, verified = Registry.load()
         models = await Task.detached { ModelScanner.scan(libraries: roots, verified: verified) }.value
         // Re-read the shell's PATH each scan, so Refresh finds an agent installed while the app was open.
-        let found = await Task.detached { Kapitsa.refreshShellPath(); return Agents.installed() }.value
+        let found = await Task.detached { Kapitsa.refreshShellPath(); Agents.refreshSupported(); return Agents.installed() }.value
         agents = found
+        agentCatalog = Agents.catalog
         let current = models
         benchmarks = await Task.detached { BenchmarkStore.load(models: current) }.value
         if selected == nil { selectedModelID = runnable.first?.id ?? models.first?.id }
         clampContext()
         Task {
             var versions: [String: String] = [:]
-            for (name, path) in found { versions[name] = await Task.detached { Agents.version(path) }.value }
+            // Only Kapitsa's agents: a custom command is not asked for --version, which it may not understand.
+            for (name, path) in found where Agents.custom(name) == nil { versions[name] = await Task.detached { Agents.version(path) }.value }
             agentVersions = versions
         }
     }
@@ -471,7 +475,12 @@ final class AppStore: ObservableObject {
                     return
                 }
                 server.measurePrompt(of: agent)
-                try Agents.launch(agent, project: project, port: server.port, apiKey: server.apiKey)
+                var model = server.record?.apiId ?? ""
+                if model.isEmpty, Agents.custom(agent) != nil {
+                    model = await Agents.servedModel(port: server.port, apiKey: server.apiKey) ?? ""
+                }
+                try Agents.launch(agent, project: project, server: .init(port: server.port, apiKey: server.apiKey, model: model,
+                                                                          context: server.stats.effectiveContext))
                 notice = "\(Agents.displayName(agent)) launched in \(project.lastPathComponent)."
             } catch { errorMessage = error.localizedDescription }
         }
@@ -551,6 +560,32 @@ final class AppStore: ObservableObject {
     private func agentContext(_ agent: String, _ model: LocalModel) -> String {
         if let compacts = Agents.info(agent)?.compactsAt, compacts > 65_536, model.contexts.contains("128k") { return "128k" }
         return model.contexts.contains("64k") ? "64k" : model.largestPreset
+    }
+
+    /// Adds a custom agent, or replaces the one with its id.
+    func saveCustomAgent(_ agent: CustomAgent) {
+        var list = Prefs.customAgents
+        if let index = list.firstIndex(where: { $0.id == agent.id }) {
+            // A different program has a different prompt size, so measure it again.
+            if list[index].executable != agent.executable { forgetPrompt(agent.id) }
+            list[index] = agent
+        } else { list.append(agent) }
+        Prefs.customAgents = list
+        agentCatalog = Agents.catalog
+        Task { await scan() }
+    }
+
+    func removeCustomAgent(_ id: String) {
+        Prefs.customAgents.removeAll { $0.id == id }
+        forgetPrompt(id)
+        agentCatalog = Agents.catalog
+        agents[id] = nil
+    }
+
+    private func forgetPrompt(_ id: String) {
+        var seen = Prefs.agentPrompts
+        seen[id] = nil
+        Prefs.agentPrompts = seen
     }
 
     func copy(_ text: String, _ message: String) {

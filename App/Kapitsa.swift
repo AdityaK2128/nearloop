@@ -50,6 +50,11 @@ enum Prefs {
         get { (defaults.dictionary(forKey: "agentPromptTokens") as? [String: Int]) ?? [:] }
         set { defaults.set(newValue, forKey: "agentPromptTokens") }
     }
+    /// Agents the user added on the Agents page.
+    static var customAgents: [CustomAgent] {
+        get { defaults.data(forKey: "customAgents").flatMap { try? JSONDecoder().decode([CustomAgent].self, from: $0) } ?? [] }
+        set { defaults.set(try? JSONEncoder().encode(newValue), forKey: "customAgents") }
+    }
     static var diskCache: String { defaults.string(forKey: "diskCache").flatMap { $0.isEmpty ? nil : $0 } ?? "auto" }
     static var shareOnNetwork: Bool { defaults.bool(forKey: "shareOnNetwork") }
     static var terminal: String { defaults.string(forKey: "terminalApp") ?? "terminal" }

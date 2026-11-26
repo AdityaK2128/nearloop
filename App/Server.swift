@@ -536,7 +536,7 @@ final class ServerController: ObservableObject {
         guard Date().timeIntervalSince(since) < 900 else { measuring = nil; return }
         // A title or summary request is small; the agent's real first turn carries its whole prompt.
         // Kapitsa names clients from their User-Agent ("claude", "opencode", "pi", "codex…").
-        guard request.prompt >= 2_000, request.client.lowercased().hasPrefix(agent.lowercased()) else { return }
+        guard request.prompt >= 2_000, request.client.lowercased().hasPrefix(Agents.clientName(agent).lowercased()) else { return }
         var seen = Prefs.agentPrompts
         seen[agent] = request.prompt
         Prefs.agentPrompts = seen

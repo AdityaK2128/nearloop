@@ -20,7 +20,7 @@ struct HomeView: View {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text(launching).foregroundStyle(.secondary) }
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 14)], spacing: 14) {
-                    ForEach(Agents.catalog) { AgentLaunchTile(agent: $0, store: store) }
+                    ForEach(homeAgents) { AgentLaunchTile(agent: $0, store: store) }
                 }
             }
             VStack(alignment: .leading, spacing: 14) {
@@ -35,6 +35,12 @@ struct HomeView: View {
                 }.fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// The installed agents; until one is, the first four to set up.
+    private var homeAgents: [AgentInfo] {
+        let installed = store.agentCatalog.filter { store.agents[$0.id] != nil }
+        return installed.isEmpty ? Array(store.agentCatalog.prefix(4)) : installed
     }
 
     private var agentDetail: String {

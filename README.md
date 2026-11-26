@@ -6,7 +6,7 @@
 
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20development-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/aditya2128)
 
-A Mac app for running language models locally and using them with coding agents: Claude Code, OpenCode, Codex CLI and Pi. It is built on **[Kapitsa](https://github.com/nace-ai/kapitsa)**, the open-source inference engine for Apple silicon by the team at [Nace AI](https://nace.ai), which ships inside the app. There is nothing else to install.
+A Mac app for running language models locally and using them with coding agents: Claude Code, OpenCode, Codex CLI, Pi and the others Kapitsa can start (Hermes, Goose, aider and Copilot CLI with the current engine), or any agent you add yourself. It is built on **[Kapitsa](https://github.com/nace-ai/kapitsa)**, the open-source inference engine for Apple silicon by the team at [Nace AI](https://nace.ai), which ships inside the app. There is nothing else to install.
 
 > **Built on Kapitsa.** The engine, its KFlash speculative decoding, the model catalog and the benchmark protocol are the Kapitsa project's work: [github.com/nace-ai/kapitsa](https://github.com/nace-ai/kapitsa). This app is an independent desktop front end for it.
 
@@ -27,7 +27,7 @@ A Mac app for running language models locally and using them with coding agents:
 | ![Home: server status, coding agents, memory and API endpoint](docs/images/home.png) | ![Discover: the Kapitsa catalog with a recommendation for your Mac](docs/images/discover.png) |
 | **Home.** The running model's live writing speed, prompt cache, context and memory, as Kapitsa reports them, plus one-click coding agents. | **Discover.** Kapitsa's catalog and Hugging Face, with a fit check for your Mac. |
 | ![Library: local models with measured performance](docs/images/models.png) | ![Coding Agents: Claude Code, OpenCode, Codex CLI and Pi](docs/images/agents.png) |
-| **Library.** Your folders and downloads, with a memory estimate for each context size and measured speed. | **Coding Agents.** Launch Claude Code, OpenCode, Codex CLI or Pi in any project. |
+| **Library.** Your folders and downloads, with a memory estimate for each context size and measured speed. | **Coding Agents.** Launch Claude Code, OpenCode, Codex CLI, Pi or any other agent in a project. |
 
 ![Benchmarks: generation, prefill, time to first token, tool calling and peak memory](docs/images/benchmarks.png)
 
@@ -57,13 +57,15 @@ Sources: [Kapitsa README, Models section](https://github.com/nace-ai/kapitsa/blo
 
 - A Mac with Apple silicon, macOS 14 or later
 - Enough memory for the model you choose: the app shows a fit estimate for every model; 16 GB runs small models and 32 GB or more runs the 27B–35B coding models
-- For agents: Claude Code, OpenCode, Codex CLI or Pi installed (the Coding Agents page shows each one's install command)
+- For agents: one installed, such as Claude Code, OpenCode, Codex CLI or Pi (the Coding Agents page lists every agent the engine can start, with its install command)
 
 ## Using it
 
 1. Open the app. **Home** recommends a model for your Mac; click **Download**, or **Add a Models Folder** if you already have models.
 2. Click **Load Model**. The live panel shows writing and reading speed, cache reuse, context used and GPU memory.
 3. On **Home** or **Coding Agents**, click **Launch** next to an agent and choose a project folder.
+
+**Your own agents.** Under **Coding Agents ▸ Add Your Own**, give an agent a name and the command that starts it (for example `omp`). It opens in the project folder with `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` set to the running model, which most agents read. Agents that read their own settings file need it pointed at the server once. Extra `KEY=value` lines and the command can use `{base_url}`, `{host}`, `{port}`, `{model}`, `{api_key}` and `{context}`, which are filled in at launch.
 
 Other apps can use the running model too. The base URL is `http://127.0.0.1:8000/v1`, which is OpenAI-compatible (chat completions and responses) and Anthropic-compatible (messages); any API key works unless you set one in Settings. **Coding Agents ▸ Install Command** adds a `kapitsa` command to `~/.local/bin`, so `kapitsa claude`, `kapitsa opencode`, `kapitsa codex` or `kapitsa pi` start an agent on the running model from any terminal.
 
@@ -120,5 +122,5 @@ Nearloop is licensed under the [Apache License 2.0](LICENSE). The bundled Kapits
 - **Benchmark data** in this README is published by the Kapitsa project (sources above).
 - **iPhone Offload** comes from the getFaster project: its Tail Worker app, shard format and prefill hook for [oMLX](https://github.com/jundot/omlx) (Apache License 2.0).
 - **Chat web search** follows the design of [oMLX](https://github.com/jundot/omlx)'s built-in web search (Apache License 2.0), written again in Swift.
-- **Coding agents** are products of their makers: Claude Code (Anthropic), OpenCode (SST), Codex CLI (OpenAI) and Pi (Mario Zechner).
+- **Coding agents** are products of their makers: Claude Code (Anthropic), OpenCode (SST), Codex CLI (OpenAI), Pi (Mario Zechner), Hermes (Nous Research), Goose (Block), aider (Paul Gauthier) and Copilot CLI (GitHub).
 - **Models** keep their own licenses; check each model's card before use.
