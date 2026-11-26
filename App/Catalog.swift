@@ -663,6 +663,21 @@ final class Downloads: ObservableObject {
 
     func dismiss(_ spec: String) { if processes[spec] == nil { jobs[spec] = nil } }
 
+    /// Cancels a download and deletes what it has written: a running one is paused first and waited for (up to
+    /// 10 s), then the model folder goes (`kapitsa rm`; a drafter's files straight from its folder).
+    func cancel(_ spec: String) async throws {
+        pause(spec)
+        for _ in 0..<100 where processes[spec] != nil { try? await Task.sleep(nanoseconds: 100_000_000) }
+        if let process = processes[spec], process.isRunning { process.terminate() }
+        if attachments[spec] != nil {
+            if let folder = jobs[spec]?.folder { try FileManager.default.removeItem(at: folder) }
+            jobs[spec] = nil
+            attachments[spec] = nil
+        } else {
+            try await delete(spec)
+        }
+    }
+
     /// Deletes a model Kapitsa downloaded (`kapitsa rm`).
     func delete(_ spec: String) async throws {
         let result = try await Kapitsa.run(["rm", spec], timeout: 120)
