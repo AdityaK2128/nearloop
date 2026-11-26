@@ -285,12 +285,17 @@ final class ChatStore: ObservableObject {
         var pending: UUID?
         let question = conversations.first { $0.id == id }?.messages.last { $0.role == .user }
         let attached = question.map { !$0.images.isEmpty && $0.imageDescriptions == nil } ?? false
-        if let question, attached, ImageSidecar.enabled, afterRefusal || imageSupport() == false {
+        let support = imageSupport()
+        if let question, attached, ImageSidecar.enabled, afterRefusal || support == false {
             guard let messageID = append(ChatMessage(role: .assistant), to: id) else { return false }
             pending = messageID
             await describeImages(of: question.id, in: id, from: messageID)
             if Task.isCancelled { update(id, messageID) { $0.error = "Stopped." }; return false }
         }
+        // Whether the first reply is to be watched for the engine dropping the images: only when nothing says yet
+        // whether this model reads them (the log settles it after the first request), and the sidecar did not run
+        // this turn (a describe step that failed stays on the reply, and its turn is not made again).
+        let watchForRefusal = attached && pending == nil && !afterRefusal && ImageSidecar.enabled && support == nil
         let refusedBefore = ServerController.shared.stats.imagesRefused
         // Failed searches in a row: after two, the model answers with what it has instead of trying again.
         var failures = 0, finishedRetry = false
@@ -316,8 +321,7 @@ final class ChatStore: ObservableObject {
             }
             // The first request carried the images: did the engine drop them? Then this model can't read images;
             // remember that, take the reply back, and let the sidecar describe them.
-            if round == 0, attached, pending == nil, !afterRefusal, ImageSidecar.enabled, let question,
-               question.imageDescriptions == nil, await imagesRefused(since: refusedBefore) {
+            if round == 0, watchForRefusal, let question, await imagesRefused(since: refusedBefore) {
                 if let index = index(of: id), let at = conversations[index].messages.firstIndex(where: { $0.id == question.id }) {
                     conversations[index].messages.removeSubrange((at + 1)...)
                 }

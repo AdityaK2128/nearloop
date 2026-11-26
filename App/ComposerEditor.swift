@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 /// file, a file promise (the screenshot thumbnail, drags out of Safari or Finder) or image data (copied in Preview),
 /// dropped or pasted, goes to `onImages` as the Attachments button would send it; promised files are read the
 /// moment they arrive, since the system's TemporaryItems folder they land in is cleared soon after. Anything else
-/// (text, other files) is handled as a text view does. Return sends; Shift- or Option-Return starts a new line.
+/// (text, other files) is handled as a text view does, and a paste that carries text as well as a picture of it
+/// (Numbers, Pages, Word) is text. Return sends; Shift- or Option-Return starts a new line; an input method's
+/// Return confirms its candidate.
 struct ComposerEditor: NSViewRepresentable {
     @Binding var text: String
     /// Changes when the field should take the keyboard: on appearing, and when another chat is opened.
@@ -74,6 +76,9 @@ final class ComposerTextView: NSTextView {
     private let promises = OperationQueue()
 
     override func keyDown(with event: NSEvent) {
+        // An input method composing text (Japanese, Chinese, Korean) takes Return to confirm its candidate; the
+        // message is sent by the next Return, once nothing is marked.
+        if hasMarkedText() { super.keyDown(with: event); return }
         // Return sends; with Shift or Option it is a new line, as in every chat app.
         if event.keyCode == 36 || event.keyCode == 76, !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.option) {
             coordinator?.parent.onSend()
@@ -85,15 +90,16 @@ final class ComposerTextView: NSTextView {
     // MARK: Images in
 
     /// Takes the images off a pasteboard as attachments; false when there are none, so the caller can go on
-    /// with text.
-    private func takeImages(from pasteboard: NSPasteboard) -> Bool {
+    /// with text. With `textWins`, image data that comes with text is left alone: Numbers, Excel, Pages, Word and
+    /// Keynote put a picture of the copied cells or paragraph next to the text, and the text is what a paste means.
+    private func takeImages(from pasteboard: NSPasteboard, textWins: Bool = false) -> Bool {
         var images: [Data] = []
         // 1. Image files on disk (Finder, the Attachments panel's kind of drag).
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
         let imageFiles = urls.filter { url in UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true }
         images += imageFiles.compactMap(ChatStore.jpeg(from:))
         // 2. Image data (copied in Preview, dragged out of a page) when no file came with it.
-        if images.isEmpty, urls.isEmpty, pasteboard.canReadObject(forClasses: [NSImage.self]),
+        if images.isEmpty, urls.isEmpty, !(textWins && hasText(pasteboard)), pasteboard.canReadObject(forClasses: [NSImage.self]),
            let image = NSImage(pasteboard: pasteboard), let data = ChatStore.jpeg(from: image) {
             images.append(data)
         }
@@ -117,7 +123,11 @@ final class ComposerTextView: NSTextView {
         }
     }
 
-    private func hasImages(_ pasteboard: NSPasteboard) -> Bool {
+    private func hasText(_ pasteboard: NSPasteboard) -> Bool {
+        (pasteboard.types ?? []).contains(where: { $0 == .string || $0 == .rtf || $0.rawValue == "public.utf8-plain-text" })
+    }
+
+    private func hasImages(_ pasteboard: NSPasteboard, textWins: Bool = false) -> Bool {
         let types = pasteboard.types ?? []
         if types.contains(where: { NSFilePromiseReceiver.readableDraggedTypes.contains($0.rawValue) }) {
             let receivers = (pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver]) ?? []
@@ -125,7 +135,7 @@ final class ComposerTextView: NSTextView {
         }
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
         if urls.contains(where: { UTType(filenameExtension: $0.pathExtension)?.conforms(to: .image) == true }) { return true }
-        return urls.isEmpty && pasteboard.canReadObject(forClasses: [NSImage.self])
+        return urls.isEmpty && !(textWins && hasText(pasteboard)) && pasteboard.canReadObject(forClasses: [NSImage.self])
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -142,7 +152,8 @@ final class ComposerTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        if hasImages(.general), takeImages(from: .general) { return }
+        // Text wins over a picture that comes with it; an image file or image data alone is attached.
+        if hasImages(.general, textWins: true), takeImages(from: .general, textWins: true) { return }
         super.paste(sender)
     }
 }
