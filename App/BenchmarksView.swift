@@ -145,11 +145,18 @@ struct BenchmarksView: View {
         }
     }
 
+    /// The model's name, and what its best run measured when it has one, so the list says which models are still
+    /// to be benchmarked without a look at the table.
+    private func pickerLabel(_ model: LocalModel) -> String {
+        guard let result = store.benchmark(for: model) else { return model.name }
+        return model.name + (result.writing.map { String(format: "  ·  %.0f tok/s", $0) } ?? "  ·  benchmarked")
+    }
+
     private var runControls: some View {
         HStack(spacing: 10) {
             Picker("Model", selection: $pick) {
                 Text("Select Model").tag("")
-                ForEach(store.runnable) { Text($0.name).tag($0.path) }
+                ForEach(store.runnable) { Text(pickerLabel($0)).tag($0.path) }
             }.labelsHidden().fixedSize()
             Button("Run") {
                 if let model = store.model(at: pick) { store.runBenchmark(model) }
