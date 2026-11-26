@@ -67,6 +67,12 @@ enum Prefs {
     static var runtimeFolder: String? { defaults.string(forKey: "runtimeFolder").flatMap { $0.isEmpty ? nil : $0 } }
     /// The kapitsa executable chosen in Settings › Engine; nil runs the copy bundled in the app.
     static var engine: String? { defaults.string(forKey: "enginePath").flatMap { $0.isEmpty ? nil : $0 } }
+    /// The agents' instruction files Nearloop made itself for the image_tool line (Settings › Images), so that
+    /// only those are removed again; a file that was there already is never deleted.
+    static var imageToolCreated: [String] {
+        get { defaults.stringArray(forKey: "imageToolCreated") ?? [] }
+        set { defaults.set(newValue, forKey: "imageToolCreated") }
+    }
     /// Kapitsa's fast profile (docs/profiles.md): the speedups that move outputs no more than the fastest other engine
     /// does, for the Macs and models each one targets. Off: precise, the exact outputs.
     static var fastProfile: Bool { defaults.bool(forKey: "fastProfile") }

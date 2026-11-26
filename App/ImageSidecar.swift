@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The image sidecar: a small vision model (Gemma 3 4B on llama.cpp) that describes images for models that can't
@@ -8,25 +9,59 @@ enum ImageSidecar {
     static let modelName = "Gemma 3 4B"
     static var folder: URL { AppPaths.folder("image-sidecar") }
 
+    // Everything the sidecar downloads, in one place: the build, the files, their sizes and the SHA-256 each must
+    // match (the archive's as GitHub's release lists it, the models' as Hugging Face's LFS records them). A file
+    // runs only once it matched; the record of that is a .sha256 file beside it (llama/SHA256 for the runner).
+
     /// llama.cpp's macOS arm64 release: llama-server and its libraries, pinned to one build.
     static let runnerBuild = "b12651"
     static let runnerURL = URL(string: "https://github.com/ggml-org/llama.cpp/releases/download/\(runnerBuild)/llama-\(runnerBuild)-bin-macos-arm64.tar.gz")!
     static let runnerBytes: Int64 = 16_644_358
+    static let runnerSHA256 = "264fd872de61679c45ad57e1e21c2a2a54e29b35734ecf3d50f24166447ab8d2"
     /// Google's quantization-aware Gemma 3 4B instruct, as ggml-org publishes it, with its vision projector.
     static let modelRepo = "ggml-org/gemma-3-4b-it-qat-GGUF"
     static let modelFile = "gemma-3-4b-it-qat-Q4_0.gguf"
     static let modelBytes: Int64 = 2_526_080_992
+    static let modelSHA256 = "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a"
     static let projectorFile = "mmproj-model-f16-4B.gguf"
     static let projectorBytes: Int64 = 851_251_744
+    static let projectorSHA256 = "c5271cab492e27cd123f808e9115a677b2ecfdb21c8152c1ad45cc455f3b592b"
     static var totalBytes: Int64 { runnerBytes + modelBytes + projectorBytes }
 
     static var runner: URL { folder.appendingPathComponent("llama/llama-server") }
     static var model: URL { folder.appendingPathComponent(modelFile) }
     static var projector: URL { folder.appendingPathComponent(projectorFile) }
+    /// The two model files with their sizes and hashes, in download order.
+    static var modelFiles: [(name: String, bytes: Int64, sha256: String)] {
+        [(modelFile, modelBytes, modelSHA256), (projectorFile, projectorBytes, projectorSHA256)]
+    }
 
+    /// Where the record of a file's verified SHA-256 is kept.
+    static func record(for url: URL) -> URL { url.appendingPathExtension("sha256") }
+    static var runnerRecord: URL { folder.appendingPathComponent("llama/SHA256") }
+    static func verified(_ record: URL, _ sha256: String) -> Bool {
+        (try? String(contentsOf: record, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) == sha256
+    }
+
+    /// Every file on disk, whole, and recorded as matching its pinned SHA-256.
     static var downloaded: Bool {
         let fm = FileManager.default
-        return fm.isExecutableFile(atPath: runner.path) && size(model) == modelBytes && size(projector) == projectorBytes
+        return fm.isExecutableFile(atPath: runner.path) && verified(runnerRecord, runnerSHA256)
+            && modelFiles.allSatisfy { size(folder.appendingPathComponent($0.name)) == $0.bytes && verified(record(for: folder.appendingPathComponent($0.name)), $0.sha256) }
+    }
+    /// The files are whole but one or more was never checked (downloaded by an earlier build): Settings offers Verify.
+    static var unverified: Bool {
+        !downloaded && FileManager.default.isExecutableFile(atPath: runner.path)
+            && modelFiles.allSatisfy { size(folder.appendingPathComponent($0.name)) == $0.bytes }
+    }
+
+    /// The SHA-256 of a file, streamed; slow for the model (seconds), so off the main thread.
+    nonisolated static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
     /// What is on disk now, for the Settings row.
     static var bytesOnDisk: Int64 { SystemMemory.allocatedBytes(folder) }
@@ -75,59 +110,79 @@ enum ImageSidecar {
     /// The one line the agents get, ending in the marker so that exactly it comes out again.
     static let instruction = "When the user attaches or names an image file you cannot see (a screenshot, a chart, a photo, a diagram), run `image_tool <file> \"<the user's question>\" \"<what you are working on and what you need from the image>\"` and work from the description it prints; it runs a local vision model and needs no network. \(marker)"
 
-    /// Each agent's global instruction file, as the agent itself reads it: Codex, Claude Code, OpenCode and Pi.
-    static var instructionFiles: [(agent: String, url: URL)] {
+    /// Each agent's global instruction file, as the agent itself reads it, and the folder that says the agent is
+    /// installed on this Mac: Codex, Claude Code, OpenCode and Pi. Only an installed agent can be told.
+    struct InstructionFile: Identifiable {
+        let agent: String
+        let url: URL
+        let home: URL
+        var id: String { agent }
+        var installed: Bool { FileManager.default.fileExists(atPath: home.path) }
+    }
+    static var instructionFiles: [InstructionFile] {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return [("Codex CLI", home.appendingPathComponent(".codex/AGENTS.md")),
-                ("Claude Code", home.appendingPathComponent(".claude/CLAUDE.md")),
-                ("OpenCode", home.appendingPathComponent(".config/opencode/AGENTS.md")),
-                ("Pi", home.appendingPathComponent(".pi/agent/AGENTS.md"))]
+        return [InstructionFile(agent: "Codex CLI", url: home.appendingPathComponent(".codex/AGENTS.md"), home: home.appendingPathComponent(".codex")),
+                InstructionFile(agent: "Claude Code", url: home.appendingPathComponent(".claude/CLAUDE.md"), home: home.appendingPathComponent(".claude")),
+                InstructionFile(agent: "OpenCode", url: home.appendingPathComponent(".config/opencode/AGENTS.md"), home: home.appendingPathComponent(".config/opencode")),
+                InstructionFile(agent: "Pi", url: home.appendingPathComponent(".pi/agent/AGENTS.md"), home: home.appendingPathComponent(".pi"))]
     }
 
     static func hasInstruction(_ url: URL) -> Bool {
         ((try? String(contentsOf: url, encoding: .utf8)) ?? "").contains(marker)
     }
 
-    /// Adds the line to every file (making the file when there is none), or takes exactly that line out again,
-    /// leaving everything else as it was. A file that held only the line is removed with it.
-    static func setInstructions(_ on: Bool) throws {
+    /// Adds the line to one agent's file (made when there is none, inside the agent's own folder), or takes exactly
+    /// that line out again, leaving everything else as it was. A file Nearloop itself made is removed again once
+    /// only the line was in it; a file that was there before stays, whatever is left in it.
+    static func setInstruction(_ on: Bool, for file: InstructionFile) throws {
+        let fm = FileManager.default
+        let url = file.url
+        if on, !file.installed { throw Kapitsa.Failure(errorDescription: "\(file.agent) isn't installed (no \(file.home.path)).") }
+        let existing = fm.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : nil
+        var lines = (existing ?? "").components(separatedBy: "\n")
+        let had = lines.contains { $0.contains(marker) }
+        lines.removeAll { $0.contains(marker) }
+        var text = lines.joined(separator: "\n")
+        if on {
+            // Appended so that taking the line out again gives the file back byte for byte: after a final newline
+            // the line gets its own; after text with none, it follows on a new line and ends as the file did,
+            // without one.
+            text += text.isEmpty || text.hasSuffix("\n") ? instruction + "\n" : "\n" + instruction
+        } else if !had {
+            return
+        }
+        var created = Prefs.imageToolCreated
+        if !on, text.isEmpty, existing != nil, created.contains(url.path) {
+            try fm.removeItem(at: url)
+            created.removeAll { $0 == url.path }
+            Prefs.imageToolCreated = created
+            return
+        }
+        guard text != existing else { return }
+        if existing == nil {
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            created.append(url.path)
+            Prefs.imageToolCreated = created
+        }
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Takes the line out of every agent's file.
+    static func clearInstructions() throws {
         var problems: [String] = []
-        for (agent, url) in instructionFiles {
-            do {
-                let fm = FileManager.default
-                let existing = fm.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : nil
-                var lines = (existing ?? "").components(separatedBy: "\n")
-                let had = lines.contains { $0.contains(marker) }
-                lines.removeAll { $0.contains(marker) }
-                var text = lines.joined(separator: "\n")
-                if on {
-                    // Appended so that taking the line out again gives the file back byte for byte: after a
-                    // final newline the line gets its own; after text with none, it follows on a new line and
-                    // ends as the file did, without one.
-                    text += text.isEmpty || text.hasSuffix("\n") ? instruction + "\n" : "\n" + instruction
-                } else if !had {
-                    continue
-                }
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    if existing != nil { try fm.removeItem(at: url) }
-                    continue
-                }
-                guard text != existing else { continue }
-                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try text.write(to: url, atomically: true, encoding: .utf8)
-            } catch {
-                problems.append("\(agent): \(error.localizedDescription)")
-            }
+        for file in instructionFiles {
+            do { try setInstruction(false, for: file) } catch { problems.append("\(file.agent): \(error.localizedDescription)") }
         }
         if !problems.isEmpty { throw Kapitsa.Failure(errorDescription: problems.joined(separator: " ")) }
     }
 
-    /// Turns the sidecar on (the command installed, the agents told) or off (the line taken out; the command stays
-    /// for anyone who runs it by hand, and says what to do when the model is gone).
+    /// Turns the sidecar on (the command installed; each agent is told from its own switch in Settings) or off
+    /// (the line taken out of every agent's file; the command stays for anyone who runs it by hand, and says what
+    /// to do when the model is gone).
     static func setEnabled(_ on: Bool) throws {
         if on { try installTool() }
         Prefs.imageSidecar = on
-        try setInstructions(on)
+        if !on { try clearInstructions() }
     }
 
     // MARK: Describing
@@ -211,31 +266,42 @@ final class ImageSidecarDownload: ObservableObject {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             job?.state = .running
             track()
-            // 1. The model and its projector, straight from Hugging Face; a file already whole is kept.
-            for (name, bytes) in [(ImageSidecar.modelFile, ImageSidecar.modelBytes), (ImageSidecar.projectorFile, ImageSidecar.projectorBytes)] {
-                let target = folder.appendingPathComponent(name)
-                if ImageSidecar.size(target) == bytes { continue }
-                let partial = folder.appendingPathComponent(name + ".part")
-                job?.lastLine = "Downloading \(name)…"
-                let code = await run("/usr/bin/curl", ["-fsSL", "--retry", "3", "-C", "-", "-o", partial.path,
-                                                      "https://huggingface.co/\(ImageSidecar.modelRepo)/resolve/main/\(name)"])
-                if job?.state == .pausing { job?.state = .paused; return }
-                guard code == 0 else { throw Kapitsa.Failure(errorDescription: "Downloading \(name) failed (curl \(code)). Retry to resume it.") }
-                guard ImageSidecar.size(partial) == bytes else {
-                    try? fm.removeItem(at: partial)
-                    throw Kapitsa.Failure(errorDescription: "\(name) came down with the wrong size and was removed. Retry to download it again.")
+            // 1. The model and its projector, straight from Hugging Face; a file already whole and checked is kept,
+            //    one whole but never checked is checked now, and one that fails its SHA-256 is removed.
+            for file in ImageSidecar.modelFiles {
+                let (name, bytes, sha256) = file
+                let target = folder.appendingPathComponent(name), record = ImageSidecar.record(for: target)
+                if ImageSidecar.size(target) == bytes, ImageSidecar.verified(record, sha256) { continue }
+                if ImageSidecar.size(target) != bytes {
+                    let partial = folder.appendingPathComponent(name + ".part")
+                    job?.lastLine = "Downloading \(name)…"
+                    let code = await run("/usr/bin/curl", ["-fsSL", "--retry", "3", "-C", "-", "-o", partial.path,
+                                                          "https://huggingface.co/\(ImageSidecar.modelRepo)/resolve/main/\(name)"])
+                    if job?.state == .pausing { job?.state = .paused; return }
+                    guard code == 0 else { throw Kapitsa.Failure(errorDescription: "Downloading \(name) failed (curl \(code)). Retry to resume it.") }
+                    guard ImageSidecar.size(partial) == bytes else {
+                        try? fm.removeItem(at: partial)
+                        throw Kapitsa.Failure(errorDescription: "\(name) came down with the wrong size and was removed. Retry to download it again.")
+                    }
+                    try? fm.removeItem(at: target)
+                    try fm.moveItem(at: partial, to: target)
                 }
-                try? fm.removeItem(at: target)
-                try fm.moveItem(at: partial, to: target)
+                try await check(target, against: sha256, named: name)
                 revision += 1
             }
-            // 2. llama.cpp's release: the archive, unpacked into llama/, flat as it ships.
-            if !fm.isExecutableFile(atPath: ImageSidecar.runner.path) {
+            // 2. llama.cpp's release: the archive, checked against the SHA-256 GitHub lists for it, then unpacked
+            //    into llama/, flat as it ships.
+            if !fm.isExecutableFile(atPath: ImageSidecar.runner.path) || !ImageSidecar.verified(ImageSidecar.runnerRecord, ImageSidecar.runnerSHA256) {
                 let archive = folder.appendingPathComponent("llama.tar.gz")
                 job?.lastLine = "Downloading llama.cpp \(ImageSidecar.runnerBuild)…"
                 let code = await run("/usr/bin/curl", ["-fsSL", "--retry", "3", "-C", "-", "-o", archive.path, ImageSidecar.runnerURL.absoluteString])
                 if job?.state == .pausing { job?.state = .paused; return }
                 guard code == 0 else { throw Kapitsa.Failure(errorDescription: "Downloading llama.cpp failed (curl \(code)). Retry to resume it.") }
+                guard ImageSidecar.size(archive) == ImageSidecar.runnerBytes else {
+                    try? fm.removeItem(at: archive)
+                    throw Kapitsa.Failure(errorDescription: "llama.cpp's archive came down with the wrong size and was removed. Retry to download it again.")
+                }
+                try await check(archive, against: ImageSidecar.runnerSHA256, named: "llama.cpp \(ImageSidecar.runnerBuild)")
                 job?.lastLine = "Unpacking llama.cpp…"
                 let llama = folder.appendingPathComponent("llama")
                 try? fm.removeItem(at: llama)
@@ -247,6 +313,7 @@ final class ImageSidecarDownload: ObservableObject {
                 }
                 _ = await run("/usr/bin/xattr", ["-cr", llama.path])
                 try? ImageSidecar.runnerBuild.write(to: llama.appendingPathComponent("BUILD"), atomically: true, encoding: .utf8)
+                try ImageSidecar.runnerSHA256.write(to: ImageSidecar.runnerRecord, atomically: true, encoding: .utf8)
                 try? fm.removeItem(at: archive)
             }
             job?.state = .finished
@@ -256,6 +323,19 @@ final class ImageSidecarDownload: ObservableObject {
             job?.state = .failed(error.localizedDescription)
             revision += 1
         }
+    }
+
+    /// Compares a file's SHA-256 with the pinned one and records the match beside it; a file that doesn't match
+    /// is removed, and the download fails with a message.
+    private func check(_ file: URL, against sha256: String, named name: String) async throws {
+        job?.lastLine = "Checking \(name)…"
+        let actual = try await Task.detached { try ImageSidecar.sha256(of: file) }.value
+        guard actual == sha256 else {
+            try? FileManager.default.removeItem(at: file)
+            try? FileManager.default.removeItem(at: ImageSidecar.record(for: file))
+            throw Kapitsa.Failure(errorDescription: "\(name) did not match its published SHA-256 (got \(actual.prefix(12))…) and was removed. Retry to download it again.")
+        }
+        try sha256.write(to: ImageSidecar.record(for: file), atomically: true, encoding: .utf8)
     }
 
     private func run(_ executable: String, _ arguments: [String]) async -> Int32 {
@@ -311,7 +391,7 @@ extension ImageSidecar {
 
     /// Whether a pid is our llama-server, by the executable it runs.
     static func isRunner(_ pid: pid_t) -> Bool {
-        var buffer = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))  // PROC_PIDPATHINFO_MAXSIZE, which Swift doesn't see
         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
         let path = URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath().path
         return path == runner.resolvingSymlinksInPath().path

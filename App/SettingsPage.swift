@@ -586,9 +586,9 @@ struct ImagesSettings: View {
     @ObservedObject private var download = ImageSidecarDownload.shared
     @State private var on = Prefs.imageSidecar
     @State private var downloaded = ImageSidecar.downloaded
+    @State private var unverified = ImageSidecar.unverified
     @State private var onDisk: Int64 = 0
     @State private var toolState = ImageSidecar.toolState
-    @State private var instructed: [String: Bool] = [:]
     @State private var serverUp = false
 
     private var home: String { FileManager.default.homeDirectoryForCurrentUser.path }
@@ -620,7 +620,9 @@ struct ImagesSettings: View {
                     }
                 }
                 LabeledContent("On Disk") {
-                    Text(downloaded ? "Downloaded · \(gigabytes(onDisk))" : onDisk > 0 ? "Partial · \(gigabytes(onDisk)) of \(gigabytes(ImageSidecar.totalBytes))" : "Not downloaded")
+                    Text(downloaded ? "Downloaded and checked · \(gigabytes(onDisk))"
+                         : unverified ? "Downloaded, not checked yet · \(gigabytes(onDisk))"
+                         : onDisk > 0 ? "Partial · \(gigabytes(onDisk)) of \(gigabytes(ImageSidecar.totalBytes))" : "Not downloaded")
                         .foregroundStyle(.secondary)
                 }
                 if downloaded {
@@ -640,12 +642,12 @@ struct ImagesSettings: View {
                         Button("Remove") { download.remove(); refresh() }
                     } else {
                         let resuming = download.job.map { job -> Bool in if case .failed = job.state { return true }; return job.state == .paused } ?? false
-                        Button(resuming ? "Resume Download" : "Download \(gigabytes(ImageSidecar.totalBytes))") { download.start() }
+                        Button(resuming ? "Resume Download" : unverified ? "Verify" : "Download \(gigabytes(ImageSidecar.totalBytes))") { download.start() }
                             .buttonStyle(.borderedProminent)
                     }
                 }
             } footer: {
-                Text("Kept in \(short(ImageSidecar.folder)). The model comes from huggingface.co/\(ImageSidecar.modelRepo), the runner from llama.cpp’s GitHub releases; both resume where they stopped.")
+                Text("Kept in \(short(ImageSidecar.folder)). The model comes from huggingface.co/\(ImageSidecar.modelRepo), the runner from llama.cpp’s GitHub releases; both resume where they stopped, and each file is checked against the SHA-256 pinned in this build before it is used.")
                     .foregroundStyle(.secondary)
             }
             Section {
@@ -663,18 +665,18 @@ struct ImagesSettings: View {
                         }.controlSize(.small).disabled(toolState == "foreign")
                     }
                 }
-                ForEach(ImageSidecar.instructionFiles, id: \.agent) { file in
-                    LabeledContent(file.agent) {
-                        HStack(spacing: 6) {
-                            Text(short(file.url)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                            Image(systemName: instructed[file.agent] == true ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(instructed[file.agent] == true ? Color.green : Color.secondary)
-                                .help(instructed[file.agent] == true ? "Has the image_tool line" : "No image_tool line")
+                ForEach(ImageSidecar.instructionFiles) { file in
+                    // Read from the file itself each time: the switch is the file's state, not a copy of it.
+                    Toggle(isOn: Binding(get: { ImageSidecar.hasInstruction(file.url) }, set: { tell(file, $0) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(file.agent)
+                            Text(file.installed ? short(file.url) : "Not installed (no \(short(file.home)))").font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         }
                     }
+                    .disabled(!on || !file.installed)
                 }
             } footer: {
-                Text("image_tool <file> \"<question>\" \"<context>\" prints what the vision model sees. While the sidecar is on, each agent’s global instruction file carries one line (marked \(ImageSidecar.marker)) telling it to run the command for an image it can’t see; off takes exactly that line out again. The agents start the vision server themselves, so Nearloop needn’t be open.")
+                Text("image_tool <file> \"<question>\" \"<context>\" prints what the vision model sees. Each switch adds one line (marked \(ImageSidecar.marker)) to that agent’s global instruction file, telling it to run the command for an image it can’t see, and takes exactly that line out again; nothing else in the file is touched, and a file Nearloop made itself goes with the line. Turning the sidecar off clears every agent. The agents start the vision server themselves, so Nearloop needn’t be open.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -699,11 +701,20 @@ struct ImagesSettings: View {
         refresh()
     }
 
+    private func tell(_ file: ImageSidecar.InstructionFile, _ value: Bool) {
+        do {
+            try ImageSidecar.setInstruction(value, for: file)
+        } catch {
+            AppStore.shared.errorMessage = error.localizedDescription
+        }
+        refresh()
+    }
+
     private func refresh() {
         on = Prefs.imageSidecar
         downloaded = ImageSidecar.downloaded
+        unverified = ImageSidecar.unverified
         toolState = ImageSidecar.toolState
-        instructed = Dictionary(uniqueKeysWithValues: ImageSidecar.instructionFiles.map { ($0.agent, ImageSidecar.hasInstruction($0.url)) })
         Task.detached {
             let bytes = ImageSidecar.bytesOnDisk
             await MainActor.run { onDisk = bytes }
