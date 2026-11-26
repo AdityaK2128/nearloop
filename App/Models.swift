@@ -216,7 +216,12 @@ enum ModelScanner {
             row.reason = "Architecture not supported by Kapitsa."
             return row
         }
-        if let type = config["model_type"] as? String, engineRuns(type) == false {
+        // The type the engine looks at is the language model's: llm_config (Nemotron Omni releases such as 3.5
+        // Super VL, whose top-level model_type is nemotron_h_omni) or text_config when there is one, else the file's.
+        let textType = ((config["llm_config"] as? [String: Any])?["model_type"] as? String)
+            ?? ((config["text_config"] as? [String: Any])?["model_type"] as? String)
+            ?? (config["model_type"] as? String)
+        if let type = textType, engineRuns(type) == false {
             row.reason = "The Kapitsa engine in use doesn’t run \(type) models yet. A newer engine can: choose one in Settings › Engine, such as Kapitsa built from source."
             row.needsEngine = true
             return row
