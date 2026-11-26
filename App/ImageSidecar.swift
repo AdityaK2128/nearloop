@@ -298,12 +298,22 @@ extension ImageSidecar {
         await ServerController.healthy(8765)
     }
 
-    /// Stops the vision server the tool started, if it is running.
+    /// Stops the vision server the tool started, if it is running: the pid in server.pid is signalled only while
+    /// it is still our llama-server (the file outlives a restart or a crashed watchdog, and pids are reused).
     static func stopServer() {
         let pidFile = folder.appendingPathComponent("server.pid")
-        if let text = try? String(contentsOf: pidFile, encoding: .utf8), let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        if let text = try? String(contentsOf: pidFile, encoding: .utf8), let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           isRunner(pid) {
             kill(pid, SIGTERM)
         }
         try? FileManager.default.removeItem(at: pidFile)
+    }
+
+    /// Whether a pid is our llama-server, by the executable it runs.
+    static func isRunner(_ pid: pid_t) -> Bool {
+        var buffer = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+        let path = URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath().path
+        return path == runner.resolvingSymlinksInPath().path
     }
 }
