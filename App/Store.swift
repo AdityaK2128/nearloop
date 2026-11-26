@@ -167,7 +167,13 @@ final class AppStore: ObservableObject {
         let roots = allLibraries, verified = Registry.load()
         models = await Task.detached { ModelScanner.scan(libraries: roots, verified: verified) }.value
         // Re-read the shell's PATH each scan, so Refresh finds an agent installed while the app was open.
-        let found = await Task.detached { Kapitsa.refreshShellPath(); Agents.refreshSupported(); return Agents.installed() }.value
+        let previous = Agents.supported
+        let (supported, found) = await Task.detached { () -> ([(id: String, name: String)], [String: String]) in
+            Kapitsa.refreshShellPath()
+            let list = Agents.readSupported() ?? previous
+            return (list, Agents.installed(supported: list))
+        }.value
+        Agents.setSupported(supported)
         agents = found
         agentCatalog = Agents.catalog
         let current = models
@@ -572,6 +578,8 @@ final class AppStore: ObservableObject {
         } else { list.append(agent) }
         Prefs.customAgents = list
         agentCatalog = Agents.catalog
+        // Found or not right away, so the card doesn't say "not found" until the rescan finishes.
+        agents[agent.id] = Agents.locate(agent.executable)
         Task { await scan() }
     }
 

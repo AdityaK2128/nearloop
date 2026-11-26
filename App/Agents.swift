@@ -30,10 +30,28 @@ struct CustomAgent: Codable, Identifiable, Hashable {
     /// Extra environment, one KEY=value per line; values may use the same placeholders.
     var environment: String = ""
 
-    /// The executable: the command's first word, with ~ expanded.
+    /// The executable: the command's first word after any leading VAR=value assignments, unquoted when it
+    /// is quoted (a path with spaces), with ~ expanded.
     var executable: String {
-        let first = command.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
-        return (first as NSString).expandingTildeInPath
+        var rest = Substring(command.trimmingCharacters(in: .whitespacesAndNewlines))
+        while true {
+            let word: Substring
+            if let quote = rest.first, quote == "\"" || quote == "'" {
+                let body = rest.dropFirst()
+                guard let end = body.firstIndex(of: quote) else { return "" }
+                word = body[..<end]
+                rest = body[body.index(after: end)...]
+            } else {
+                let end = rest.firstIndex(where: \.isWhitespace) ?? rest.endIndex
+                word = rest[..<end]
+                rest = rest[end...]
+                if word.range(of: "^[A-Za-z_][A-Za-z0-9_]*=", options: .regularExpression) != nil {
+                    rest = rest.drop(while: \.isWhitespace)
+                    continue
+                }
+            }
+            return (String(word) as NSString).expandingTildeInPath
+        }
     }
 
     /// KEY=value lines that set a valid variable name; the rest are reported by `invalidLines`.
@@ -95,17 +113,19 @@ enum Agents {
     // OpenCode 1.19 and Pi 1.4 were measured on Kapitsa 0.2.26; the others are estimates. Each is replaced by
     // what this Mac sees on the agent's first launch (`Prefs.agentPrompts`).
 
-    /// The agents Kapitsa can start, by id with the name its help gives, in its order. Read by `refreshSupported`.
-    private(set) static var supported: [(id: String, name: String)] = fallback
-    private static let fallback: [(id: String, name: String)] = ["claude", "opencode", "codex", "pi"].map { ($0, $0) }
+    /// The agents Kapitsa can start, by id with the name its help gives, in its order. Set on the main thread
+    /// from `readSupported` by each scan; until the first, the four every Kapitsa that Nearloop runs has.
+    private(set) static var supported: [(id: String, name: String)] = ["claude", "opencode", "codex", "pi"].map { ($0, $0) }
 
-    /// Reads the agents the current engine can start from its help. Keeps the previous list when that fails.
-    static func refreshSupported() {
+    /// The agents the current engine can start, from its help; nil when it can't be read. Safe off the main thread.
+    static func readSupported() -> [(id: String, name: String)]? {
         guard let binary = Kapitsa.binary,
               let help = try? Kapitsa.runSync(binary.path, ["--help"], env: Kapitsa.environment(), timeout: 10).output,
-              let parsed = parseSupported(help), !parsed.isEmpty else { return }
-        supported = parsed
+              let parsed = parseSupported(help), !parsed.isEmpty else { return nil }
+        return parsed
     }
+
+    @MainActor static func setSupported(_ list: [(id: String, name: String)]) { supported = list }
 
     /// The help's command list has a line `  claude, codex, opencode, … [--model M] …`; the lines
     /// `  kapitsa <agent>   <Name>` give the names.
@@ -155,18 +175,18 @@ enum Agents {
 
     /// Installed agents by id, with the executable's path: Kapitsa's on the user's login PATH (`kapitsa <agent>`
     /// starts them from there), and custom ones whose command is found there or at the path given.
-    static func installed() -> [String: String] {
-        let directories = Kapitsa.loginPath.split(separator: ":").map(String.init)
-        func find(_ name: String) -> String? {
-            if name.contains("/") { return FileManager.default.isExecutableFile(atPath: name) ? name : nil }
-            return directories.first { FileManager.default.isExecutableFile(atPath: $0 + "/" + name) }.map { $0 + "/" + name }
-        }
+    static func installed(supported: [(id: String, name: String)]) -> [String: String] {
         var found: [String: String] = [:]
-        for (id, _) in supported { if let path = find(id) { found[id] = path } }
-        for agent in Prefs.customAgents where !agent.executable.isEmpty {
-            if let path = find(agent.executable) { found[agent.id] = path }
-        }
+        for (id, _) in supported { if let path = locate(id) { found[id] = path } }
+        for agent in Prefs.customAgents { if let path = locate(agent.executable) { found[agent.id] = path } }
         return found
+    }
+
+    /// Where a program is: a path as given, else the first folder of the login PATH that has it.
+    static func locate(_ name: String) -> String? {
+        guard !name.isEmpty else { return nil }
+        if name.contains("/") { return FileManager.default.isExecutableFile(atPath: name) ? name : nil }
+        return Kapitsa.loginPath.split(separator: ":").map { $0 + "/" + name }.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     static func version(_ path: String) -> String {
@@ -196,7 +216,7 @@ enum Agents {
     static let placeholderHelp: [(String, String)] = [
         ("{base_url}", "http://127.0.0.1:PORT/v1"), ("{host}", "http://127.0.0.1:PORT"), ("{port}", "the port"),
         ("{model}", "the running model’s name"), ("{api_key}", "the API key (kapitsa when none is set)"),
-        ("{context}", "the loaded context in tokens"),
+        ("{context}", "the loaded context in tokens (empty when unknown)"),
     ]
 
     /// The model a server this app did not start is serving (the first of `/v1/models`).
