@@ -205,6 +205,16 @@ enum ModelScanner {
         let files = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
         let weights = files.filter { $0.hasSuffix(".safetensors") && !$0.hasPrefix(".") }
         row.size = weights.reduce(Int64(0)) { total, name in total + fm.sizeFollowingLinks(atPath: url.appendingPathComponent(name).path) }
+        // A download `kapitsa pull` has not finished (paused, or still running): the files still being fetched sit
+        // in .kapitsa/parts as .part files, and the model's own files may already look whole (Flint ships no
+        // model.safetensors.index.json, so a missing shard goes unnoticed by the shard check), and whatever the model is, a
+        // folder still being filled is neither a drafter, nor unsupported, nor one for another engine yet.
+        let parts = (try? fm.contentsOfDirectory(atPath: url.appendingPathComponent(".kapitsa/parts").path)) ?? []
+        if parts.contains(where: { $0.hasSuffix(".part") }) {
+            row.status = .incomplete
+            row.reason = "Download not finished: resume it in Discover, or `kapitsa pull \(url.lastPathComponent)`."
+            return row
+        }
         let classes = (config["architectures"] as? [String]) ?? []
         if classes.contains(where: { $0.contains("Draft") }) || url.lastPathComponent.lowercased().contains("dflash") {
             row.status = .companion
@@ -224,15 +234,6 @@ enum ModelScanner {
         if let type = textType, engineRuns(type) == false {
             row.reason = "The Kapitsa engine in use doesn’t run \(type) models yet. A newer engine can: choose one in Settings › Engine, such as Kapitsa built from source."
             row.needsEngine = true
-            return row
-        }
-        // A download `kapitsa pull` has not finished (paused, or still running): the files still being fetched sit
-        // in .kapitsa/parts as .part files, and the model's own files may already look whole (Flint ships no
-        // model.safetensors.index.json, so a missing shard goes unnoticed below).
-        let parts = (try? fm.contentsOfDirectory(atPath: url.appendingPathComponent(".kapitsa/parts").path)) ?? []
-        if parts.contains(where: { $0.hasSuffix(".part") }) {
-            row.status = .incomplete
-            row.reason = "Download not finished: resume it in Discover, or `kapitsa pull \(url.lastPathComponent)`."
             return row
         }
         let index = readJSON(url.appendingPathComponent("model.safetensors.index.json"))
