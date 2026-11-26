@@ -67,12 +67,6 @@ enum Prefs {
     static var runtimeFolder: String? { defaults.string(forKey: "runtimeFolder").flatMap { $0.isEmpty ? nil : $0 } }
     /// The kapitsa executable chosen in Settings › Engine; nil runs the copy bundled in the app.
     static var engine: String? { defaults.string(forKey: "enginePath").flatMap { $0.isEmpty ? nil : $0 } }
-    /// What Nearloop's own source build follows (Settings › Engine › Source): an `EngineSource.Source` id; nil until
-    /// chosen, when the checkout's own branch decides.
-    static var engineSource: String? {
-        get { defaults.string(forKey: "engineSource").flatMap { $0.isEmpty ? nil : $0 } }
-        set { defaults.set(newValue, forKey: "engineSource") }
-    }
     /// Kapitsa's fast profile (docs/profiles.md): the speedups that move outputs no more than the fastest other engine
     /// does, for the Macs and models each one targets. Off: precise, the exact outputs.
     static var fastProfile: Bool { defaults.bool(forKey: "fastProfile") }

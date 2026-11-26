@@ -9,65 +9,6 @@ import Foundation
 enum EngineSource {
     static let repository = "https://github.com/nace-ai/kapitsa.git"
 
-    /// What Nearloop's own clone follows: Kapitsa's main, or a beta branch on a fork with work upstream hasn't
-    /// shipped yet. A beta entry is removed from `betas` once Kapitsa ships it.
-    struct Source: Identifiable, Equatable {
-        let id: String
-        let label: String
-        /// The git URL to fetch from.
-        let repository: String
-        let branch: String
-        /// One line on what the branch brings.
-        let about: String
-        /// The pull request that brings it upstream, once there is one.
-        var pullRequest: URL? = nil
-        var isMain: Bool { id == "main" }
-        /// "owner/name" for GitHub's API.
-        var github: String {
-            repository.replacingOccurrences(of: "https://github.com/", with: "").replacingOccurrences(of: ".git", with: "")
-        }
-    }
-    static let main = Source(id: "main", label: "Kapitsa main", repository: repository, branch: "main",
-                             about: "The latest commit of nace-ai/kapitsa.")
-    static let betas: [Source] = [
-        Source(id: "ink2-vision", label: "Inkling image input (beta)", repository: "https://github.com/gelubodrug/kapitsa.git", branch: "ink2-vision",
-               about: "Inkling-2-Mini reads images through the checkpoint’s own vision tower, so Chat and the agents can send it screenshots.",
-               pullRequest: URL(string: "https://github.com/nace-ai/kapitsa/pull/1419")),
-    ]
-    static var sources: [Source] { [main] + betas }
-    static func source(_ id: String?) -> Source { sources.first { $0.id == id } ?? main }
-
-    /// The source chosen in Settings › Engine; before any choice, whatever branch Nearloop's clone is on (a clone
-    /// switched to a beta branch by hand shows as that beta).
-    static var chosen: Source {
-        if let id = Prefs.engineSource { return source(id) }
-        let branch = currentBranch(of: managed)
-        return betas.first { $0.branch == branch } ?? main
-    }
-
-    /// The branch a checkout is on, from .git/HEAD; nil when there is no checkout or HEAD is detached.
-    static func currentBranch(of checkout: Checkout) -> String? {
-        guard let head = try? String(contentsOf: checkout.source.appendingPathComponent(".git/HEAD"), encoding: .utf8) else { return nil }
-        let line = head.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard line.hasPrefix("ref: refs/heads/") else { return nil }
-        return String(line.dropFirst("ref: refs/heads/".count))
-    }
-
-    /// The source a checkout follows: the chosen one for Nearloop's clone, main for a clone of the user's own.
-    static func source(for checkout: Checkout) -> Source { checkout == managed ? chosen : main }
-
-    /// Moves Nearloop's clone to the source's branch when that branch is there already and the clone is clean,
-    /// so the Engine row and the next Check for Updates speak of the chosen source; the binary stays what it was
-    /// until the next Build. Nothing to do when the branch is not local yet: Build fetches it.
-    static func switchTo(_ source: Source) {
-        guard let git = which("git"), !isBuilding(managed.binary),
-              FileManager.default.fileExists(atPath: managed.source.appendingPathComponent(".git").path),
-              currentBranch(of: managed) != source.branch else { return }
-        guard (try? read(git, ["-C", managed.source.path, "status", "--porcelain", "--untracked-files=no"]))?.isEmpty == true else { return }
-        guard (try? read(git, ["-C", managed.source.path, "rev-parse", "--verify", "-q", "refs/heads/\(source.branch)"])) != nil else { return }
-        try? step(git, ["-C", managed.source.path, "checkout", "-q", source.branch], timeout: 60)
-    }
-
     /// Build folders with a build under way. The engine there is being relinked, so `Kapitsa.binary` doesn't hand it
     /// out meanwhile, and a second build of the same checkout is refused (the pane can be closed and reopened while
     /// one runs).
@@ -146,25 +87,22 @@ enum EngineSource {
     /// of main's latest commit.
     static func check(_ checkout: Checkout) -> Status {
         guard let git = which("git") else { return .unknown("git is not installed: run xcode-select --install") }
-        let source = source(for: checkout)
         do {
             let branch = try read(git, ["-C", checkout.source.path, "rev-parse", "--abbrev-ref", "HEAD"])
             let head = try read(git, ["-C", checkout.source.path, "rev-parse", "--short", "HEAD"])
-            if branch != source.branch {
-                // Nearloop's clone on another branch than the chosen source's: Build switches it over.
-                if checkout == managed { return .behind(0, "On branch \(branch) (\(head)): Build switches to \(source.branch)", []) }
+            if branch != "main" {
                 return .unknown("On branch \(branch) (\(head)): Build updates a checkout of main only")
             }
-            // The source's branch, whatever this clone's origin is (a fork, say).
-            try step(git, ["-C", checkout.source.path, "fetch", "-q", source.repository, source.branch], timeout: 120)
+            // nace-ai's main, whatever this clone's origin is (a fork, say).
+            try step(git, ["-C", checkout.source.path, "fetch", "-q", repository, "main"], timeout: 120)
             let latest = try read(git, ["-C", checkout.source.path, "rev-parse", "--short", "FETCH_HEAD"])
             let when = age(try read(git, ["-C", checkout.source.path, "log", "-1", "--format=%cI", "FETCH_HEAD"])).map { ", \($0)" } ?? ""
             let behind = Int(try read(git, ["-C", checkout.source.path, "rev-list", "--count", "HEAD..FETCH_HEAD"])) ?? 0
-            if behind == 0 { return .atLatest("At the latest commit on \(source.branch) (\(head)\(when))") }
-            // What a Build would bring: the newest commits' subjects, as the branch's log words them.
+            if behind == 0 { return .atLatest("At the latest commit on main (\(head)\(when))") }
+            // What a Build would bring: the newest commits' subjects, as main's log words them.
             let subjects = try read(git, ["-C", checkout.source.path, "log", "--format=%s", "-n", "\(whatsNewLimit)", "HEAD..FETCH_HEAD"])
                 .split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            return .behind(behind, "\(behind) commit\(behind == 1 ? "" : "s") behind \(source.branch) (\(head) → \(latest)\(when))", subjects)
+            return .behind(behind, "\(behind) commit\(behind == 1 ? "" : "s") behind main (\(head) → \(latest)\(when))", subjects)
         } catch {
             return .unknown(error.localizedDescription)
         }
@@ -196,10 +134,9 @@ enum EngineSource {
         return lines
     }
 
-    /// What the source's branch holds right now, asked of GitHub before there is a checkout: the commit a first
-    /// Build compiles.
-    static func remote(_ source: Source = chosen) -> Status {
-        var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(source.github)/commits/\(source.branch)")!, timeoutInterval: 20)
+    /// What main holds right now, asked of GitHub before there is a checkout: the commit a first Build compiles.
+    static func remote() -> Status {
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/nace-ai/kapitsa/commits/main")!, timeoutInterval: 20)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         let done = DispatchSemaphore(value: 0)
         var outcome: Status = .unknown("Could not reach GitHub")
@@ -208,10 +145,10 @@ enum EngineSource {
             if let error { outcome = .unknown("Could not reach GitHub: \(error.localizedDescription)"); return }
             guard let data, (response as? HTTPURLResponse)?.statusCode == 200,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let sha = json["sha"] as? String else { outcome = .unknown("GitHub gave no answer about \(source.branch)"); return }
+                  let sha = json["sha"] as? String else { outcome = .unknown("GitHub gave no answer about main"); return }
             let date = ((json["commit"] as? [String: Any])?["committer"] as? [String: Any])?["date"] as? String
             let when = date.flatMap(age).map { ", \($0)" } ?? ""
-            outcome = .remote("\(source.branch.prefix(1).uppercased() + source.branch.dropFirst()) is at \(sha.prefix(7))\(when) — not built yet")
+            outcome = .remote("Main is at \(sha.prefix(7))\(when) — not built yet")
         }.resume()
         _ = done.wait(timeout: .now() + 25)
         return outcome
@@ -230,30 +167,22 @@ enum EngineSource {
         defer { lock.lock(); building.remove(key); lock.unlock() }
 
         let fm = FileManager.default
-        let source = source(for: checkout)
         if fm.fileExists(atPath: checkout.source.appendingPathComponent(".git").path) {
-            // Only a clean checkout moves: work in progress stays as it is. A clone of the user's own moves only
-            // on main; Nearloop's own clone switches to the chosen source's branch.
+            // Only a clean main moves: a branch of the user's own, or work in progress, stays as it is.
             let branch = try read(git, ["-C", checkout.source.path, "rev-parse", "--abbrev-ref", "HEAD"])
-            guard branch == source.branch || checkout == managed else {
+            guard branch == "main" else {
                 throw Kapitsa.Failure(errorDescription: "\(checkout.source.path) is on branch \(branch); switch it to main to update it here.")
             }
             guard try read(git, ["-C", checkout.source.path, "status", "--porcelain", "--untracked-files=no"]).isEmpty else {
                 throw Kapitsa.Failure(errorDescription: "\(checkout.source.path) has uncommitted changes; commit or stash them first.")
             }
-            progress("Pulling \(source.branch)…")
-            try step(git, ["-C", checkout.source.path, "fetch", "-q", source.repository, source.branch], timeout: 300)
-            if source.isMain {
-                if branch != "main" { try step(git, ["-C", checkout.source.path, "checkout", "-q", "-B", "main", "FETCH_HEAD"], timeout: 120) }
-                else { try step(git, ["-C", checkout.source.path, "merge", "-q", "--ff-only", "FETCH_HEAD"], timeout: 120) }
-            } else {
-                // A beta branch follows the fork's tip, rebased or not: the local branch is set to what was fetched.
-                try step(git, ["-C", checkout.source.path, "checkout", "-q", "-B", source.branch, "FETCH_HEAD"], timeout: 120)
-            }
+            progress("Pulling main…")
+            try step(git, ["-C", checkout.source.path, "fetch", "-q", repository, "main"], timeout: 300)
+            try step(git, ["-C", checkout.source.path, "merge", "-q", "--ff-only", "FETCH_HEAD"], timeout: 120)
         } else {
-            progress("Cloning \(source.github)…")
+            progress("Cloning nace-ai/kapitsa…")
             try fm.createDirectory(at: checkout.source.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try step(git, ["clone", "-q", "--depth", "50", "--branch", source.branch, source.repository, checkout.source.path], timeout: 900)
+            try step(git, ["clone", "-q", "--depth", "50", repository, checkout.source.path], timeout: 900)
         }
         progress("Configuring (cmake)…")
         try step(cmake, ["-S", checkout.source.path, "-B", checkout.build.path, "-DCMAKE_BUILD_TYPE=Release"], timeout: 600)

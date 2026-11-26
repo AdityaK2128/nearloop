@@ -248,8 +248,6 @@ struct EngineSettings: View {
     @AppStorage("fastProfile") private var fastProfile = false
     /// The picker's own selection: the engine, or the "Other…" entry while the file dialog is up.
     @State private var selection = ""
-    /// What Nearloop's own source build follows: Kapitsa's main or a beta branch (EngineSource.sources).
-    @State private var source = EngineSource.chosen.id
     @State private var version = "…"
     @State private var installed: [URL] = []
     /// What each engine in the picker says it is, by path ("" for the bundled copy).
@@ -279,19 +277,8 @@ struct EngineSettings: View {
     /// Where an installed engine comes from, in a word or its folder.
     private func origin(_ path: String) -> String {
         if path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/usr/local/Cellar/") || path == "/usr/local/bin/kapitsa" { return "Homebrew" }
-        if path == EngineSource.managed.binary.path { return managedOrigin }
         if EngineSource.checkout(of: URL(fileURLWithPath: path)) != nil { return "Built from Source, " + short(path) }
         return short(path)
-    }
-    /// Nearloop's own source build, named with the beta it follows, if any.
-    private var managedOrigin: String {
-        let chosen = EngineSource.source(source)
-        return "Built from Source" + (chosen.isMain ? "" : " · \(chosen.label)")
-    }
-    /// The source picker belongs to Nearloop's own clone only; a checkout of the user's own follows main.
-    private var managedSource: Bool {
-        if case .source(let checkout, _) = kind { return checkout == EngineSource.managed }
-        return false
     }
 
     /// What kind of engine is chosen; the actions below the rows follow from it.
@@ -325,21 +312,9 @@ struct EngineSettings: View {
                         Text(name(engine, from: origin(engine))).tag(engine)
                     }
                     let managed = EngineSource.managed.binary.path
-                    Text(FileManager.default.isExecutableFile(atPath: managed) ? name(managed, from: managedOrigin) : "\(EngineSource.source(source).label) · Build from Source").tag(managed)
+                    Text(FileManager.default.isExecutableFile(atPath: managed) ? name(managed, from: "Built from Source") : "Kapitsa main · Build from Source").tag(managed)
                     Divider()
                     Text("Other…").tag(Self.other)
-                }
-                if managedSource {
-                    Picker("Source", selection: $source) {
-                        ForEach(EngineSource.sources) { Text($0.label).tag($0.id) }
-                    }
-                    let chosen = EngineSource.source(source)
-                    if !chosen.isMain {
-                        HStack(spacing: 8) {
-                            Text(chosen.about).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            if let pull = chosen.pullRequest { Link("Pull request", destination: pull).font(.caption) }
-                        }
-                    }
                 }
                 // A source engine not built yet shows what it will be, not the bundled copy standing in for it.
                 if case .source(let checkout, built: false) = kind {
@@ -399,16 +374,6 @@ struct EngineSettings: View {
         .onChange(of: selection) { _, chosen in
             if chosen == Self.other { choose() } else if chosen != engine { engine = chosen }
         }
-        // Another source: the clone moves to its branch when that is there already (Build fetches it otherwise),
-        // and the check runs again against it. The engine in use stays until the next Build.
-        .onChange(of: source) { _, id in
-            guard EngineSource.source(id).id != Prefs.engineSource else { return }
-            Prefs.engineSource = id
-            Task.detached {
-                EngineSource.switchTo(EngineSource.source(id))
-                await MainActor.run { scan(); checkForUpdate() }
-            }
-        }
         // The Library lists what the engine runs and Discover what its catalog has: both are read again.
         .onChange(of: engine) { _, _ in Task { await AppStore.shared.scan(); await AppStore.shared.loadCatalog() } }
         .task(id: engine) {
@@ -437,14 +402,9 @@ struct EngineSettings: View {
         case .installed:
             return "An installed Kapitsa, used in the bundled copy's place. Check for Updates asks for the latest release and shows its notes; Update runs brew upgrade for a Homebrew install and kapitsa update (its signed download from GitHub) otherwise. A running model keeps the engine it started with until it is reloaded."
         case .source(let checkout, let built):
-            let chosen = EngineSource.source(for: checkout), branch = chosen.branch
-            var words = built
-                ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches \(branch), counts the commits this checkout is behind and lists the newest of them; Build pulls \(branch) and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
-                : "Build clones \(chosen.github) into \(short(checkout.source.path)), compiles the latest commit of \(branch) in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
-            if !chosen.isMain {
-                words += " \(chosen.label.replacingOccurrences(of: " (beta)", with: "")) is a beta: the build comes from the \(branch) branch of the fork \(chosen.github), not from Kapitsa itself, and this choice will be retired when Kapitsa ships it. Kapitsa main switches back; the next Build rebuilds main."
-            }
-            return words
+            return built
+                ? "Built from source in \(short(checkout.source.path)). Check for Updates fetches main, counts the commits this checkout is behind and lists the newest of them; Build pulls main and rebuilds the kapitsa and systemone targets in Release, with git and CMake from the login shell's PATH. A running model keeps the engine it started with until it is reloaded."
+                : "Build clones nace-ai/kapitsa into \(short(checkout.source.path)), compiles the latest commit of main in Release (git and CMake from the login shell's PATH; minutes the first time) and runs it as the engine. Until then the bundled engine stands in."
         }
     }
 
@@ -456,7 +416,7 @@ struct EngineSettings: View {
         case .bundled: return Kapitsa.binary == nil ? "No engine" : "Updates with the app"
         case .source:
             switch sourceStatus {
-            case .none: return "Checking \(EngineSource.source(source).branch)…"
+            case .none: return "Checking main…"
             case .atLatest(let words), .behind(_, let words, _), .remote(let words), .unknown(let words): return words
             }
         case .installed:
