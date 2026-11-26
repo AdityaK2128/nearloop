@@ -64,7 +64,10 @@ struct BenchmarksView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Link("Compare with other Macs and engines in Kapitsa’s published results ↗", destination: URL(string: "https://github.com/nace-ai/kapitsa#benchmarks")!)
                     .font(.callout)
-                Text("Benchmarks start only when the model fits in available memory, and stop automatically under critical memory pressure, swap activity or low free memory. Results: \((BenchmarkStore.folder.path as NSString).abbreviatingWithTildeInPath)")
+                Text((Prefs.protectMemory
+                      ? "Benchmarks start only when the model fits in available memory, and stop automatically under critical memory pressure, swap activity or low free memory."
+                      : "Memory Protection is off (Settings › Memory): benchmarks start whatever memory is free, and stop only under critical memory pressure.")
+                     + " Results: \((BenchmarkStore.folder.path as NSString).abbreviatingWithTildeInPath)")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }

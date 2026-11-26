@@ -102,10 +102,14 @@ final class BenchmarkRunner: ObservableObject {
         }
         guard let binary = Kapitsa.binary else { throw Kapitsa.Failure(errorDescription: "Kapitsa engine not found. Reinstall Nearloop.") }
         if let problem = Kapitsa.storageProblem() { throw Kapitsa.Failure(errorDescription: problem) }
-        let need = SystemMemory.estimatedNeedGB(model)
-        let budget = SystemMemory.safeBudgetGB()
-        guard need <= budget else {
-            throw Kapitsa.Failure(errorDescription: String(format: "Insufficient memory: %@ requires about %.0f GB; up to %.0f GB can be used now. Close other apps and try again.", model.name, need, budget))
+        // The same rule as a load (Settings › Memory): with Memory Protection on, the model must fit in what other
+        // apps leave; off, the benchmark starts whatever is free, as a load does.
+        if Prefs.protectMemory {
+            let need = SystemMemory.estimatedNeedGB(model)
+            let budget = SystemMemory.safeBudgetGB()
+            guard need <= budget else {
+                throw Kapitsa.Failure(errorDescription: String(format: "Not enough free memory: %@ needs about %.0f GB and %.0f GB is free now, keeping %.0f GB for other apps. Close some apps, or turn off Memory Protection in Settings › Memory.", model.name, need, budget, Prefs.memoryMargin))
+            }
         }
         let stamp = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate, .withTime])
             .replacingOccurrences(of: ":", with: "")
@@ -165,17 +169,20 @@ final class BenchmarkRunner: ObservableObject {
         Self.stopTree(process.processIdentifier)
     }
 
+    /// Stops the benchmark before macOS starts swapping heavily. With Memory Protection off only critical memory
+    /// pressure stops it: a model that barely fits is allowed to swap a little, as it is when it is loaded.
     private func watch(_ process: Process) {
         let swapStart = SystemMemory.swapUsedGB()
         let started = Date()
+        let protect = Prefs.protectMemory
         Task.detached { [weak self] in
             while process.isRunning {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 let free = SystemMemory.availableGB(), swap = SystemMemory.swapUsedGB() - swapStart
                 var reason: String?
                 if SystemMemory.pressure() >= 4 { reason = "critical memory pressure" }
-                else if swap > 1 { reason = String(format: "swap activity (%.1f GB)", swap) }
-                else if free < 1.5 { reason = String(format: "low free memory (%.1f GB)", free) }
+                else if protect, swap > 1 { reason = String(format: "swap activity (%.1f GB)", swap) }
+                else if protect, free < 1.5 { reason = String(format: "low free memory (%.1f GB)", free) }
                 else if Date().timeIntervalSince(started) > 2400 { reason = "exceeded the 40-minute time limit" }
                 if let reason {
                     await self?.markStopped(reason)
