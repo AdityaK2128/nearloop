@@ -756,69 +756,71 @@ struct FollowingScroll<Content: View>: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 0) {
-                    // Laid out in the width beside the lane and kept to the leading edge: the same place and
-                    // width whether the bar is there (the clip view narrower by the lane) or not.
-                    if lane > 0, viewport.width > lane {
-                        content.frame(width: viewport.width - lane).frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        content
+        // The viewport is the room the window offers, measured around the scroll view rather than on it: a
+        // content laid out at a fixed width would otherwise hold the scroll view at that width after the
+        // window narrows, and the conversation and composer would run off its right edge.
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // Laid out in the width beside the lane and kept to the leading edge: the same place and
+                        // width whether the bar is there (the clip view narrower by the lane) or not.
+                        if lane > 0, geometry.size.width > lane {
+                            content.frame(width: geometry.size.width - lane).frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            content
+                        }
+                        // The end of the conversation; how far below the visible area it is says whether the
+                        // reader is at the end.
+                        Color.clear.frame(height: 1).id("bottom")
+                            .background(GeometryReader { marker in
+                                Color.clear.preference(key: EndOffset.self, value: marker.frame(in: .named("conversation")).minY)
+                            })
                     }
-                    // The end of the conversation; how far below the visible area it is says whether the
-                    // reader is at the end.
-                    Color.clear.frame(height: 1).id("bottom")
-                        .background(GeometryReader { geometry in
-                            Color.clear.preference(key: EndOffset.self, value: geometry.frame(in: .named("conversation")).minY)
-                        })
+                }
+                .coordinateSpace(name: "conversation")
+                // Back at the end (within a line or two): follow again. Growth alone never stops following.
+                .onPreferenceChange(EndOffset.self) { end in
+                    if !following && end <= viewport.height + 40 { following = true }
+                }
+                .onChange(of: growth) { _, _ in
+                    if following { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                .onChange(of: restart) { _, _ in
+                    following = true
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                .onAppear {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                    watchScrolling()
+                }
+                .onDisappear {
+                    if let monitor { NSEvent.removeMonitor(monitor) }
+                    monitor = nil
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+                    scrollerStyle = NSScroller.preferredScrollerStyle
+                }
+                .overlay(alignment: .bottom) {
+                    if !following {
+                        Button {
+                            following = true
+                            withAnimation(.snappy) { proxy.scrollTo("bottom", anchor: .bottom) }
+                        } label: {
+                            Image(systemName: "arrow.down").font(.system(size: 13, weight: .semibold))
+                                .frame(width: 32, height: 32)
+                                .background(Circle().fill(.regularMaterial))
+                                .overlay(Circle().strokeBorder(Color.primary.opacity(0.12)))
+                                .shadow(color: .black.opacity(0.2), radius: 4, y: 1)
+                        }
+                        .buttonStyle(.plain).padding(.bottom, 12)
+                        .help(writing ? "Follow the reply" : "Scroll to the end")
+                        .transition(.opacity)
+                    }
                 }
             }
-            .coordinateSpace(name: "conversation")
-            .background(GeometryReader { geometry in
-                Color.clear
-                    .onAppear { viewport = geometry.frame(in: .global) }
-                    .onChange(of: geometry.frame(in: .global)) { _, frame in viewport = frame }
-            })
-            // Back at the end (within a line or two): follow again. Growth alone never stops following.
-            .onPreferenceChange(EndOffset.self) { end in
-                if !following && end <= viewport.height + 40 { following = true }
-            }
-            .onChange(of: growth) { _, _ in
-                if following { proxy.scrollTo("bottom", anchor: .bottom) }
-            }
-            .onChange(of: restart) { _, _ in
-                following = true
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            .onAppear {
-                proxy.scrollTo("bottom", anchor: .bottom)
-                watchScrolling()
-            }
-            .onDisappear {
-                if let monitor { NSEvent.removeMonitor(monitor) }
-                monitor = nil
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
-                scrollerStyle = NSScroller.preferredScrollerStyle
-            }
-            .overlay(alignment: .bottom) {
-                if !following {
-                    Button {
-                        following = true
-                        withAnimation(.snappy) { proxy.scrollTo("bottom", anchor: .bottom) }
-                    } label: {
-                        Image(systemName: "arrow.down").font(.system(size: 13, weight: .semibold))
-                            .frame(width: 32, height: 32)
-                            .background(Circle().fill(.regularMaterial))
-                            .overlay(Circle().strokeBorder(Color.primary.opacity(0.12)))
-                            .shadow(color: .black.opacity(0.2), radius: 4, y: 1)
-                    }
-                    .buttonStyle(.plain).padding(.bottom, 12)
-                    .help(writing ? "Follow the reply" : "Scroll to the end")
-                    .transition(.opacity)
-                }
-            }
+            .onAppear { viewport = geometry.frame(in: .global) }
+            .onChange(of: geometry.frame(in: .global)) { _, frame in viewport = frame }
         }
     }
 

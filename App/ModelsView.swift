@@ -54,17 +54,22 @@ struct ModelsView: View {
             .frame(minWidth: 260, idealWidth: 300 + Metrics.gutter - 12, maxWidth: 300 + Metrics.gutter - 12)
             .background(Color(nsColor: .windowBackgroundColor))
             Divider()
-            ScrollView {
-                if let model = store.selected {
-                    ModelDetail(model: model, store: store, server: ServerController.shared)
-                        .frame(maxWidth: 780, alignment: .leading)
-                        .padding(.horizontal, 36).padding(.top, 30).padding(.bottom, 44)
-                        .frame(maxWidth: .infinity)
-                } else {
-                    ContentUnavailableView("No Model Selected", systemImage: "square.stack.3d.up", description: Text("Select a model, add a folder, or download from Discover."))
-                        .padding(.top, 80)
+            // The detail is held to the room beside the list: a line that can't shrink is cut at the right there,
+            // rather than widening the page past the window and cutting both its edges.
+            GeometryReader { geometry in
+                ScrollView {
+                    if let model = store.selected {
+                        ModelDetail(model: model, store: store, server: ServerController.shared)
+                            .frame(maxWidth: 780, alignment: .leading)
+                            .padding(.horizontal, 36).padding(.top, 30).padding(.bottom, 44)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        ContentUnavailableView("No Model Selected", systemImage: "square.stack.3d.up", description: Text("Select a model, add a folder, or download from Discover."))
+                            .padding(.top, 80)
+                    }
                 }
-            }.frame(maxWidth: .infinity)
+                .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+            }
         }
     }
 }
@@ -180,11 +185,28 @@ private struct ModelDetail: View {
                         .help(bench.running != nil ? "A benchmark is running" : "")
                 }
             }
-            HStack(spacing: 14) {
-                Text("Context").foregroundStyle(.secondary)
-                contextPicker
-                customContextField
-                Spacer(minLength: 0)
+            // The picker keeps its segments at their size, so a model with many sizes (256K, 1M, a custom one)
+            // makes a row wider than the page in a narrow window: the Custom box, then the picker, go under
+            // the label, and the picker last shares the width out among its segments, so the page never
+            // grows past the window.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) {
+                    Text("Context").foregroundStyle(.secondary)
+                    contextPicker(fitted: true)
+                    customContextField
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 14) {
+                        Text("Context").foregroundStyle(.secondary)
+                        contextPicker(fitted: true)
+                    }
+                    customContextField
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Context").foregroundStyle(.secondary)
+                    contextPicker(fitted: false)
+                    customContextField
+                }
             }
             if let customProblem {
                 Label(customProblem, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
@@ -237,12 +259,12 @@ private struct ModelDetail: View {
         }.card()
     }
 
-    /// Uses the size typed in the Custom box, or says why it can't.
-    private var contextPicker: some View {
+    /// The sizes as segments: at their own width when fitted, else sharing the width offered.
+    private func contextPicker(fitted: Bool) -> some View {
         Picker("Context", selection: $store.context) {
             ForEach(model.contextOptions(including: store.context), id: \.self) { Text(model.contextLabel($0).replacingOccurrences(of: " (Max)", with: "")).tag($0) }
         }
-        .pickerStyle(.segmented).labelsHidden().fixedSize().disabled(server.running)
+        .pickerStyle(.segmented).labelsHidden().fixedSize(horizontal: fitted, vertical: true).disabled(server.running)
         .help("Tokens per conversation. Larger contexts use more memory.")
     }
 
