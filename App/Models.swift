@@ -21,6 +21,8 @@ struct LocalModel: Identifiable, Hashable {
     var drafter = ""
     /// A model Kapitsa supports whose type the engine in use doesn't run yet: another engine (Settings › Engine) can.
     var needsEngine = false
+    /// Unsupported because Kapitsa refused to load the folder once (`ModelScanner.refusal`); Try Again forgets that.
+    var refused = false
     /// The folder keeps the model's vision tower (vision_config in config.json), so the chat can take images.
     var vision = false
     var nativeContext: Int?
@@ -220,6 +222,7 @@ enum ModelScanner {
         // with Kapitsa's own words, until the folder or the engine changes.
         if let refusal = refusal(of: url) {
             row.reason = "Kapitsa couldn’t load it: \(refusal). Remembered until the folder or the engine changes."
+            row.refused = true
             return row
         }
         // The type the engine looks at is the language model's: llm_config (Nemotron Omni releases such as 3.5
@@ -341,15 +344,27 @@ enum ModelScanner {
 
     /// Remembers that the engine refused to load a folder, from the `fatal:` line Kapitsa printed, so the scan shows
     /// it as Unsupported with Kapitsa's own words until the folder or the engine changes. Nothing is kept for a
-    /// failure that is not Kapitsa's refusal of the model itself (a port in use, memory, a missing file).
+    /// failure that is not Kapitsa's refusal of the model itself: a port in use or a missing file print no fatal,
+    /// and a memory or GPU fatal ("insufficient memory: … needs N GB of GPU memory", "insufficient memory for a
+    /// N-token KV cache", "Metal alloc of N bytes failed") depends on the settings and on what else is using
+    /// memory, so the same folder loads once those change.
     static func rememberRefusal(of path: String, from lines: [String]) {
         guard let line = lines.last(where: { $0.contains("fatal:") }), let key = engineKey() else { return }
         var message = line[line.range(of: "fatal:")!.upperBound...].trimmingCharacters(in: .whitespaces)
+        let lowered = message.lowercased()
+        if ["insufficient memory", "out of memory", "metal alloc", "gpu error"].contains(where: lowered.contains) { return }
         // Kapitsa names the folder first ("<dir>: missing tensor …", the dir being the model's or a benchmark's link
         // to it); the Library already shows which folder.
         if message.hasPrefix("/"), let colon = message.range(of: ": ") { message = String(message[colon.upperBound...]) }
         var all = Prefs.loadRefusals
         all[path] = ["message": message, "engine": key, "stamp": stamp(URL(fileURLWithPath: path))]
+        Prefs.loadRefusals = all
+    }
+
+    /// Forgets a remembered refusal (Try Again on the model's page), so the next scan offers the folder for loading.
+    static func forgetRefusal(of path: String) {
+        var all = Prefs.loadRefusals
+        all[path] = nil
         Prefs.loadRefusals = all
     }
 

@@ -136,6 +136,14 @@ private struct ModelDetail: View {
                     Button("Model card") { NSWorkspace.shared.open(readme) }
                         .buttonStyle(.link).font(.callout).help("Opens README.md in the model's folder")
                 }
+                if model.refused {
+                    // Kapitsa's refusal is remembered until the folder or the engine changes; this forgets it, in case
+                    // the failure was about something else after all, and the Load button comes back on the rescan.
+                    Button("Try Again") {
+                        ModelScanner.forgetRefusal(of: model.path)
+                        Task { await store.scan() }
+                    }.help("Forgets that Kapitsa refused this folder, so it can be loaded again")
+                }
                 if model.needsEngine {
                     Button("Choose Engine…") {
                         UserDefaults.standard.set(SettingsPage.Category.engine.rawValue, forKey: "settingsCategory")
