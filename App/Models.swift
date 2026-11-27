@@ -21,6 +21,8 @@ struct LocalModel: Identifiable, Hashable {
     var drafter = ""
     /// A model Kapitsa supports whose type the engine in use doesn't run yet: another engine (Settings › Engine) can.
     var needsEngine = false
+    /// Unsupported because Kapitsa refused to load the folder once (`ModelScanner.refusal`); Try Again forgets that.
+    var refused = false
     /// The folder keeps the model's vision tower (vision_config in config.json), so the chat can take images.
     var vision = false
     var nativeContext: Int?
@@ -242,6 +244,13 @@ enum ModelScanner {
             row.reason = "Architecture not supported by Kapitsa."
             return row
         }
+        // A folder this engine refused to load (a conversion in a format Kapitsa doesn't read, say) stays Unsupported,
+        // with Kapitsa's own words, until the folder or the engine changes.
+        if let refusal = refusal(of: url) {
+            row.reason = "Kapitsa couldn’t load it: \(refusal). Remembered until the folder or the engine changes."
+            row.refused = true
+            return row
+        }
         // The type the engine looks at is the language model's: llm_config (Nemotron Omni releases such as 3.5
         // Super VL, whose top-level model_type is nemotron_h_omni) or text_config when there is one, else the file's.
         let textType = ((config["llm_config"] as? [String: Any])?["model_type"] as? String)
@@ -329,9 +338,7 @@ enum ModelScanner {
     /// engine whose binary doesn't contain the name can't load it (a model added to Kapitsa after the engine was
     /// released). nil when there is no engine to ask. Each engine file is mapped, not read, and kept per file and date.
     static func engineRuns(_ type: String) -> Bool? {
-        guard !type.isEmpty, let engine = Kapitsa.binary?.resolvingSymlinksInPath() else { return nil }
-        let date = (try? engine.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        let key = engine.path + "|" + String(date?.timeIntervalSince1970 ?? 0)
+        guard !type.isEmpty, let engine = Kapitsa.binary?.resolvingSymlinksInPath(), let key = engineKey() else { return nil }
         engineLock.lock(); defer { engineLock.unlock() }
         if engineFile?.key != key {
             guard let data = try? Data(contentsOf: engine, options: .alwaysMapped) else { return nil }
@@ -341,6 +348,58 @@ enum ModelScanner {
     }
     private static let engineLock = NSLock()
     nonisolated(unsafe) private static var engineFile: (key: String, data: Data)?
+
+    /// The engine in use, as a file and its date: a rebuilt or swapped engine is another key.
+    static func engineKey() -> String? {
+        guard let engine = Kapitsa.binary?.resolvingSymlinksInPath() else { return nil }
+        let date = (try? engine.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return engine.path + "|" + String(date?.timeIntervalSince1970 ?? 0)
+    }
+
+    /// A model folder as it is: its own and its config's modification dates, and its weight files' names and sizes,
+    /// so a folder that was refilled, re-converted or had files added or removed reads as another folder.
+    static func stamp(_ url: URL) -> String {
+        let fm = FileManager.default
+        func date(_ path: String) -> String {
+            String(((try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date)?.timeIntervalSince1970 ?? 0)
+        }
+        let files = ((try? fm.contentsOfDirectory(atPath: url.path)) ?? []).filter { $0.hasSuffix(".safetensors") || $0.hasSuffix(".gguf") }.sorted()
+        let weights = files.map { "\($0):\(fm.sizeFollowingLinks(atPath: url.appendingPathComponent($0).path))" }.joined(separator: ",")
+        return date(url.path) + "|" + date(url.appendingPathComponent("config.json").path) + "|" + weights
+    }
+
+    /// Remembers that the engine refused to load a folder, from the `fatal:` line Kapitsa printed, so the scan shows
+    /// it as Unsupported with Kapitsa's own words until the folder or the engine changes. Nothing is kept for a
+    /// failure that is not Kapitsa's refusal of the model itself: a port in use or a missing file print no fatal,
+    /// and a memory or GPU fatal ("insufficient memory: … needs N GB of GPU memory", "insufficient memory for a
+    /// N-token KV cache", "Metal alloc of N bytes failed") depends on the settings and on what else is using
+    /// memory, so the same folder loads once those change.
+    static func rememberRefusal(of path: String, from lines: [String]) {
+        guard let line = lines.last(where: { $0.contains("fatal:") }), let key = engineKey() else { return }
+        var message = line[line.range(of: "fatal:")!.upperBound...].trimmingCharacters(in: .whitespaces)
+        let lowered = message.lowercased()
+        if ["insufficient memory", "out of memory", "metal alloc", "gpu error"].contains(where: lowered.contains) { return }
+        // Kapitsa names the folder first ("<dir>: missing tensor …", the dir being the model's or a benchmark's link
+        // to it); the Library already shows which folder.
+        if message.hasPrefix("/"), let colon = message.range(of: ": ") { message = String(message[colon.upperBound...]) }
+        var all = Prefs.loadRefusals
+        all[path] = ["message": message, "engine": key, "stamp": stamp(URL(fileURLWithPath: path))]
+        Prefs.loadRefusals = all
+    }
+
+    /// Forgets a remembered refusal (Try Again on the model's page), so the next scan offers the folder for loading.
+    static func forgetRefusal(of path: String) {
+        var all = Prefs.loadRefusals
+        all[path] = nil
+        Prefs.loadRefusals = all
+    }
+
+    /// Kapitsa's refusal of this folder, if the engine and the folder are still the ones it refused.
+    static func refusal(of url: URL) -> String? {
+        guard let kept = Prefs.loadRefusals[url.path], let message = kept["message"] else { return nil }
+        guard kept["engine"] == engineKey(), kept["stamp"] == stamp(url) else { return nil }
+        return message
+    }
 
     static func family(_ config: [String: Any]) -> String? {
         let type = config["model_type"] as? String ?? ""
