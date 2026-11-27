@@ -11,6 +11,8 @@ struct MainWindow: View {
     /// The sidebar's visibility, kept here so the toggle is the app's own: the system one left the toolbar when the
     /// sidebar collapsed, reappearing only inside an empty overflow button ("»") at the far right.
     @State private var columns = NavigationSplitViewVisibility.all
+    /// The sidebar's download the user asked to cancel, until the alert is answered.
+    @State private var cancelling: PendingDownload?
 
     var body: some View {
         let pages = Page.visible(experimental: experimental)
@@ -117,16 +119,29 @@ struct MainWindow: View {
     private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
             UpdateBanner()
-            if !downloads.active.isEmpty {
-                ForEach(downloads.active) { job in
+            if !pendingDownloads.isEmpty {
+                ForEach(pendingDownloads) { item in
                     VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(job.title).font(.caption).lineLimit(1).truncationMode(.middle)
+                        HStack(spacing: 6) {
+                            Text(item.title).font(.caption).lineLimit(1).truncationMode(.middle)
                             Spacer(minLength: 4)
-                            Text(job.state == .pausing ? "Pausing" : String(format: "%.0f%%", job.fraction * 100))
-                                .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                            if item.busy {
+                                SidebarIconButton(symbol: "pause.circle", hover: .accentColor, help: "Pause") { downloads.pause(item.id) }
+                                    .disabled(item.pausing)
+                            } else {
+                                SidebarIconButton(symbol: "play.circle", hover: .accentColor, help: "Resume where it stopped") {
+                                    downloads.start(item.id, title: item.title, expectedBytes: item.expected)
+                                }
+                            }
+                            SidebarIconButton(symbol: "xmark.circle", hover: .red, help: "Cancel the download and delete its files") { cancelling = item }
                         }
-                        ProgressView(value: job.fraction).controlSize(.small)
+                        // The percent sits at the bar's end, in the bar's own colour: blue while the download runs, grey paused.
+                        HStack(spacing: 6) {
+                            ProgressView(value: item.fraction).controlSize(.small).tint(item.busy ? Color.accentColor : Color.secondary)
+                            Text(item.pausing ? "Pausing" : String(format: "%.0f%%", item.fraction * 100))
+                                .font(.caption2).monospacedDigit().lineLimit(1).fixedSize()
+                                .foregroundStyle(item.busy ? Color.accentColor : Color.secondary)
+                        }
                     }
                 }
                 Divider()
@@ -147,7 +162,61 @@ struct MainWindow: View {
                 }
             }
         }.padding(12)
+        .alert(item: $cancelling) { item in
+            Alert(title: Text("Cancel the download of \(item.title)?"),
+                  message: Text(item.fraction > 0 ? String(format: "The %.0f%% downloaded so far is deleted.", item.fraction * 100) : "Its files are deleted."),
+                  primaryButton: .destructive(Text("Delete Download")) {
+                      Task {
+                          do { try await downloads.cancel(item.id) } catch { store.errorMessage = error.localizedDescription }
+                          await store.scan()
+                      }
+                  },
+                  secondaryButton: .cancel(Text("Keep")))
+        }
     }
+
+    /// Every download the sidebar follows: the jobs of this session that have not finished (running, pausing,
+    /// paused or failed) and the catalog folders an earlier session left unfinished (no job, files on disk), so a
+    /// paused download can be resumed or cancelled from here without finding its card in Discover.
+    private var pendingDownloads: [PendingDownload] {
+        var rows = downloads.jobs.values.filter { $0.state != .finished }.map { job in
+            PendingDownload(id: job.id, title: job.title, fraction: job.fraction, busy: job.busy, pausing: job.state == .pausing, expected: job.expected)
+        }
+        for variant in store.catalog.flatMap(\.variants) where downloads.jobs[variant.id] == nil {
+            guard let model = store.localModel(for: variant), model.status == .incomplete else { continue }
+            let fraction = variant.bytes > 0 ? min(0.99, Double(model.size) / Double(variant.bytes)) : 0
+            rows.append(PendingDownload(id: variant.id, title: variant.id, fraction: fraction, busy: false, pausing: false, expected: variant.bytes))
+        }
+        return rows.sorted { $0.title < $1.title }
+    }
+}
+
+/// A borderless icon button of the sidebar's download rows: grey until the pointer is over it, then its own colour
+/// (blue for pause and play, red for cancel).
+private struct SidebarIconButton: View {
+    let symbol: String
+    let hover: Color
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) { Image(systemName: symbol) }
+            .buttonStyle(.borderless)
+            .foregroundStyle(hovering ? hover : Color.secondary)
+            .onHover { hovering = $0 }
+            .help(help)
+    }
+}
+
+/// A row of the sidebar's download list (MainWindow.pendingDownloads).
+struct PendingDownload: Identifiable {
+    let id: String
+    let title: String
+    let fraction: Double
+    let busy: Bool
+    let pausing: Bool
+    let expected: Int64
 }
 
 // MARK: - Menu bar
