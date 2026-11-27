@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// One completed request, from Kapitsa's per-request log summary (the rows of its Requests table).
@@ -265,6 +266,9 @@ final class ServerController: ObservableObject {
     @Published private(set) var logLines: [String] = []
     @Published private(set) var processLabel = ""
     @Published private(set) var externalPort = 0
+    /// What runs the server on externalPort that Nearloop didn't start: an app's name ("SomeApp"), else its program
+    /// ("kapitsa" from a terminal); empty for iPhone Offload, which is Nearloop's own.
+    @Published private(set) var externalHolder = ""
     @Published private(set) var memoryWarning: String?
     @Published private(set) var live = LiveActivity()
     private var swapAtStart = 0.0
@@ -282,7 +286,12 @@ final class ServerController: ObservableObject {
 
     var owned: Bool { record != nil && [.starting, .ready, .stopping].contains(phase) }
     var running: Bool { owned || phase == .external }
-    var port: Int { record?.port ?? Prefs.port }
+    /// Whether a model can be loaded now: nothing of Nearloop's own is serving. A server another app runs doesn't
+    /// stand in the way: the model is offered another port (choosePort).
+    var canLoad: Bool { !owned && !Offload.shared.serving }
+    /// The port everything talks to: the loaded model's (which can differ from Settings › Server when another app
+    /// held that), else the server found running (iPhone Offload's may be another one too), else the setting.
+    var port: Int { record?.port ?? (phase == .external && externalPort != 0 ? externalPort : Prefs.port) }
 
     init() {
         adoptExisting()
@@ -299,20 +308,23 @@ final class ServerController: ObservableObject {
     /// The key clients must send: the one the running server started with, else the current setting.
     var apiKey: String { record?.apiKey ?? Prefs.apiKey }
 
-    func start(_ model: LocalModel, context: String) throws {
-        guard !running else { throw Kapitsa.Failure(errorDescription: "A model is already running. Stop it before loading another.") }
+    /// Starts Kapitsa on `port`, or on the port in Settings › Server when none is given (choosePort picks one
+    /// that is free when another app holds that).
+    func start(_ model: LocalModel, context: String, port chosen: Int? = nil) throws {
+        guard !owned else { throw Kapitsa.Failure(errorDescription: "A model is already running. Stop it before loading another.") }
+        if Offload.shared.serving {
+            throw Kapitsa.Failure(errorDescription: "iPhone Offload (Experimental) is serving \(Offload.shared.saved.modelName). Stop it there first.")
+        }
         // A benchmark runs its own server; two models at once would defeat both memory checks and the measurement.
         guard BenchmarkRunner.shared.running == nil else {
             throw Kapitsa.Failure(errorDescription: "A benchmark is running. Wait for it to finish or cancel it before loading a model.")
         }
         guard let binary = Kapitsa.binary else { throw Kapitsa.Failure(errorDescription: "Kapitsa engine not found. Reinstall Nearloop.") }
         if let problem = Kapitsa.storageProblem() { throw Kapitsa.Failure(errorDescription: problem) }
-        let port = Prefs.port
-        if Self.listener(port) != 0 {
-            if Offload.shared.owns(port: port) {
-                throw Kapitsa.Failure(errorDescription: "iPhone Offload (Experimental) is serving \(Offload.shared.saved.modelName) on port \(port). Stop it there first.")
-            }
-            throw Kapitsa.Failure(errorDescription: "Port \(port) is in use by another application. Free the port or change it in Settings.")
+        let port = chosen ?? Prefs.port
+        let holder = Self.listener(port)
+        if holder != 0 {
+            throw Kapitsa.Failure(errorDescription: "Port \(port) is in use by \(Self.holder(holder)). Free the port or change it in Settings › Server.")
         }
         let apiId = model.name.replacingOccurrences(of: #"[^A-Za-z0-9_.-]+"#, with: "-", options: .regularExpression) + "-" + model.id.prefix(6)
         var arguments = ["serve", "--model", Kapitsa.loadPath(for: model.path), "--model-id", apiId,
@@ -493,10 +505,13 @@ final class ServerController: ObservableObject {
                     : level >= 2 ? "Elevated memory pressure." : nil
             }
         } else if tick % 6 == 0 {
-            let port = Prefs.port
+            // iPhone Offload serves on the port it was started on, which is another one when an app held this one.
+            let offload = Offload.shared
+            let port = offload.serving ? offload.saved.port : Prefs.port
             let pid = await Task.detached { Self.listener(port) }.value
             if pid != 0 {
                 externalPort = port
+                externalHolder = offload.owns(port: port) ? "" : await Task.detached { Self.holder(pid) }.value
                 if case .failed = phase {} else { phase = .external }
                 processLabel = await Task.detached { Self.usage(pid) }.value
             } else if phase == .external {
@@ -597,6 +612,80 @@ final class ServerController: ObservableObject {
     nonisolated static func executable(of pid: Int32) -> String {
         var buffer = [CChar](repeating: 0, count: 4096)
         return proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 ? String(cString: buffer) : ""
+    }
+
+    /// Who runs the process on a port, as a person would name it: the app whose bundle holds the program
+    /// ("SomeApp" for …/SomeApp.app/Contents/…/python3), else the program itself ("kapitsa").
+    nonisolated static func holder(_ pid: Int32) -> String {
+        let path = executable(of: pid)
+        if let bundle = path.range(of: ".app/") { return URL(fileURLWithPath: String(path[..<bundle.lowerBound])).lastPathComponent }
+        return path.isEmpty ? "another app" : URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    /// Whether a server could listen on the port: binding it works on the loopback and on every address (with
+    /// SO_REUSEADDR, as Kapitsa binds, so connections closed a moment ago don't count; this also finds another
+    /// user's server, which lsof can't see), and nothing listens there.
+    nonisolated static func portFree(_ port: Int) -> Bool {
+        guard (1024...65535).contains(port) else { return false }
+        for address: UInt32 in [0x7f00_0001, 0] {
+            let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { return false }
+            defer { Darwin.close(fd) }
+            var one: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
+            var socketAddress = sockaddr_in()
+            socketAddress.sin_family = sa_family_t(AF_INET)
+            socketAddress.sin_port = in_port_t(UInt16(port).bigEndian)
+            socketAddress.sin_addr = in_addr(s_addr: address.bigEndian)
+            let bound = withUnsafePointer(to: &socketAddress) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
+            if bound != 0 { return false }
+        }
+        return listener(port) == 0
+    }
+
+    /// The first free port after `port`, up to 100 further.
+    nonisolated static func freePort(after port: Int, skipping: Set<Int> = []) -> Int? {
+        guard port < 65535 else { return nil }
+        return ((port + 1)...min(port + 100, 65535)).first { !skipping.contains($0) && portFree($0) }
+    }
+
+    /// The port for a model Nearloop is about to serve: `wanted` when given and free (a reload keeps its port), else
+    /// the one in Settings › Server when it's free. When another app holds that, the person is offered the next free
+    /// port, for this time or from now on (Chat, agents and the addresses on Home follow the port the model runs
+    /// on). nil when they cancel.
+    func choosePort(for what: String, wanted: Int? = nil) async throws -> Int? {
+        if let wanted, await Task.detached(operation: { Self.portFree(wanted) }).value { return wanted }
+        let configured = Prefs.port
+        if await Task.detached(operation: { Self.portFree(configured) }).value { return configured }
+        if Offload.shared.owns(port: configured) {
+            throw Kapitsa.Failure(errorDescription: "iPhone Offload (Experimental) is serving \(Offload.shared.saved.modelName) on port \(configured). Stop it there first.")
+        }
+        let skipping: Set<Int> = [ImageSidecar.port]
+        let (holder, free) = await Task.detached { () -> (String, Int?) in
+            let pid = Self.listener(configured)
+            return (pid == 0 ? "another app" : Self.holder(pid), Self.freePort(after: configured, skipping: skipping))
+        }.value
+        guard let free else {
+            throw Kapitsa.Failure(errorDescription: "Port \(configured) is in use by \(holder), and no free port was found after it. Choose another port in Settings › Server.")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Port \(configured) is in use by \(holder)"
+        alert.informativeText = "\(what) can run on port \(free) instead. Chat, coding agents started from Nearloop and the addresses under Connect Other Apps use the port the model runs on. Apps you set up yourself with port \(configured) need the new address."
+        alert.addButton(withTitle: "Use Port \(free)")
+        alert.addButton(withTitle: "Always Use Port \(free)")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return free
+        case .alertSecondButtonReturn:
+            UserDefaults.standard.set(free, forKey: "port")  // (Settings › Server shows it)
+            return free
+        default:
+            return nil
+        }
     }
 
     nonisolated static func usage(_ pid: Int32) -> String {

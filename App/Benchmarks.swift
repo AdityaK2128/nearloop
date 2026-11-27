@@ -105,7 +105,8 @@ final class BenchmarkRunner: ObservableObject {
 
     func run(_ model: LocalModel, finished: @escaping () -> Void) throws {
         guard running == nil else { throw Kapitsa.Failure(errorDescription: "A benchmark is already running.") }
-        guard !ServerController.shared.running else {
+        // (a server another app runs doesn't count: Kapitsa's bench picks a free port of its own)
+        guard ServerController.shared.canLoad else {
             throw Kapitsa.Failure(errorDescription: "Stop the running model first. Benchmarks start a dedicated server.")
         }
         guard let binary = Kapitsa.binary else { throw Kapitsa.Failure(errorDescription: "Kapitsa engine not found. Reinstall Nearloop.") }

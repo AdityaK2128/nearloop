@@ -145,7 +145,7 @@ struct BenchmarksView: View {
     private var runDescription: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("New Benchmark").font(.headline)
-            Text(server.running ? "Stop the loaded model first; a benchmark needs the memory to itself." : "Typically 3–8 minutes. Requires no model to be running.")
+            Text(!server.canLoad ? "Stop the loaded model first; a benchmark needs the memory to itself." : "Typically 3–8 minutes. Requires no model to be running.")
                 .font(.callout).foregroundStyle(.secondary)
         }
     }
@@ -165,7 +165,7 @@ struct BenchmarksView: View {
             }.labelsHidden().fixedSize()
             Button("Run") {
                 if let model = store.model(at: pick) { store.runBenchmark(model) }
-            }.buttonStyle(.borderedProminent).controlSize(.large).disabled(pick.isEmpty || server.running)
+            }.buttonStyle(.borderedProminent).controlSize(.large).disabled(pick.isEmpty || !server.canLoad)
         }.fixedSize(horizontal: false, vertical: true)
     }
 }

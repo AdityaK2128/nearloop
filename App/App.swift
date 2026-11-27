@@ -151,7 +151,7 @@ struct MainWindow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(server.record?.modelName ?? (server.phase == .external ? Offload.shared.externalName : "No Model Loaded"))
                         .font(.caption.weight(.medium)).lineLimit(1)
-                    Text(server.phase == .ready || server.phase == .external ? "Port \(server.port)" : server.phase == .starting ? "Loading…" : "Idle")
+                    Text(server.phase == .ready || server.phase == .external ? "Port \(String(server.port))" : server.phase == .starting ? "Loading…" : "Idle")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -233,7 +233,7 @@ struct MenuBarContent: View {
             Button("Stop Model") { server.stop() }
         } else if server.phase == .external, Offload.shared.serving {
             Button("Stop Model") { Offload.shared.stop() }
-        } else if !server.running, let path = Prefs.lastModel, let model = store.model(at: path) {
+        } else if server.canLoad, let path = Prefs.lastModel, let model = store.model(at: path) {
             Button("Load \(model.name)") { store.loadLast() }
         }
         if server.phase == .ready || server.phase == .external {

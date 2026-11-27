@@ -407,10 +407,22 @@ final class AppStore: ObservableObject {
     // MARK: Server
 
     func load(_ model: LocalModel, context: String? = nil) {
-        do {
-            try server.start(model, context: context ?? self.context)
-            notice = "Loading \(model.name)…"
-        } catch { errorMessage = error.localizedDescription }
+        let context = context ?? self.context
+        Task {
+            do {
+                if try await startServer(model, context: context) { notice = "Loading \(model.name)…" }
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    /// Starts a model on the port in Settings › Server, or on a free one the person chooses when another app holds
+    /// that (`wanted`: the port to keep, for a reload). False when they cancel.
+    @discardableResult
+    func startServer(_ model: LocalModel, context: String, wanted: Int? = nil) async throws -> Bool {
+        guard server.canLoad else { throw Kapitsa.Failure(errorDescription: "A model is already running. Stop it before loading another.") }
+        guard let port = try await server.choosePort(for: model.name, wanted: wanted) else { return false }
+        try server.start(model, context: context, port: port)
+        return true
     }
 
     func loadLast() {
@@ -488,6 +500,8 @@ final class AppStore: ObservableObject {
                 try Agents.launch(agent, project: project, server: .init(port: server.port, apiKey: server.apiKey, model: model,
                                                                           context: server.stats.effectiveContext))
                 notice = "\(Agents.displayName(agent)) launched in \(project.lastPathComponent)."
+            } catch is CancellationError {
+                // (the port choice was cancelled: nothing started)
             } catch { errorMessage = error.localizedDescription }
         }
     }
@@ -508,7 +522,7 @@ final class AppStore: ObservableObject {
         defer { launching = nil }
         if !server.running {
             launching = "Starting \(model.name) for \(purpose)…"
-            try server.start(model, context: context(model))
+            guard try await startServer(model, context: context(model)) else { throw CancellationError() }
         }
         while server.phase == .starting {
             try await Task.sleep(nanoseconds: 500_000_000)
@@ -544,6 +558,7 @@ final class AppStore: ObservableObject {
     /// Stops the loaded model, loads it again with a larger context, then launches the agent.
     func reloadAndLaunch(_ agent: String, project: URL, context: String) {
         guard let record = server.record, let model = model(at: record.modelPath) else { launch(agent, project: project, force: true); return }
+        let port = record.port
         Task {
             launching = "Reloading \(model.name) at \(model.contextLabel(context).replacingOccurrences(of: " (Max)", with: ""))…"
             defer { launching = nil }
@@ -551,7 +566,8 @@ final class AppStore: ObservableObject {
             for _ in 0..<100 where server.owned { try? await Task.sleep(nanoseconds: 200_000_000) }
             if server.owned { errorMessage = "The model didn’t stop, so it wasn’t reloaded."; return }
             do {
-                try server.start(model, context: context)
+                // The same port as before, so the agents and apps using it stay connected.
+                guard try await startServer(model, context: context, wanted: port) else { return }
                 while server.phase == .starting { try await Task.sleep(nanoseconds: 500_000_000) }
                 guard server.phase == .ready else {
                     errorMessage = "\(model.name) failed to load at the larger context. See Logs for details."

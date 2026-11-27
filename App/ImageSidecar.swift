@@ -376,9 +376,21 @@ final class ImageSidecarDownload: ObservableObject {
 }
 
 extension ImageSidecar {
-    /// Whether the vision server is up (answering on its port).
+    /// The port the vision server uses: the one image_tool last started it on (`port` in the folder; it moves to a
+    /// free one when another app holds 8765), else 8765.
+    nonisolated static var port: Int {
+        let text = try? String(contentsOf: folder.appendingPathComponent("port"), encoding: .utf8)
+        guard let port = text.flatMap({ Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }), (1024...65535).contains(port) else { return 8765 }
+        return port
+    }
+
+    /// Whether the vision server is up: our llama-server listens on its port and answers (another app's server on
+    /// that port doesn't count).
     nonisolated static func serverRunning() async -> Bool {
-        await ServerController.healthy(8765)
+        let port = port
+        let pid = await Task.detached { ServerController.listener(port) }.value
+        guard pid != 0, isRunner(pid) else { return false }
+        return await ServerController.healthy(port)
     }
 
     /// Stops the vision server the tool started, if it is running: the pid in server.pid is signalled only while

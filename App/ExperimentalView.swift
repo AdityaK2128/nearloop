@@ -197,12 +197,13 @@ struct ExperimentalView: View {
                 Spacer()
                 Button("Start with iPhone") { offload.start() }
                     .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(offload.blocker != nil || offload.model == nil || server.phase == .external
+                    .disabled(offload.blocker != nil || offload.model == nil
                               || offload.model.flatMap { offload.inspections[$0.path] }.map { !$0.supported } == true)
             }
         }
         if server.phase == .external && !offload.running && !offload.busy {
-            Text("Another server is using port \(String(server.externalPort)). Stop it first.").font(.caption).foregroundStyle(.orange)
+            Text("\(server.externalHolder.isEmpty ? "Another app" : server.externalHolder) is using port \(String(server.externalPort)). Starting offers a free port instead.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 

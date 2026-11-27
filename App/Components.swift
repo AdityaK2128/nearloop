@@ -343,7 +343,7 @@ struct VariantAction: View {
                             .help("Downloaded")
                         Button(store.server.record?.modelPath == model.path ? "Loaded" : "Load") {
                             store.load(model, context: model.contexts.contains("64k") ? "64k" : nil)
-                        }.disabled(store.server.running)
+                        }.disabled(!store.server.canLoad)
                     }
                 } else if store.localModel(for: variant) != nil {
                     action("Resume", symbol: "arrow.clockwise.circle.fill").help("This download didn’t finish; resume it")

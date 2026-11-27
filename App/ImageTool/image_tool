@@ -9,12 +9,17 @@
 # what matters. The description is printed to stdout.
 #
 # The vision model is Gemma 3 4B (QAT Q4_0, from ggml-org) on llama.cpp's llama-server, both downloaded by Nearloop
-# (Settings › Images). The server starts on demand at 127.0.0.1:8765 and quits after five minutes without a request.
+# (Settings › Images). The server starts on demand at 127.0.0.1:8765 (or the next free port, when another app holds
+# that) and quits after five minutes without a request.
 # It runs on its own: Nearloop doesn't need to be open.
 set -uo pipefail
 
 dir=${NEARLOOP_IMAGE_SIDECAR_DIR:-"$HOME/Library/Application Support/Nearloop/image-sidecar"}
-port=${NEARLOOP_IMAGE_SIDECAR_PORT:-8765}
+# The port: NEARLOOP_IMAGE_SIDECAR_PORT, else the one the server last started on (it moves to a free one when another
+# app holds it; Nearloop reads the same file), else 8765.
+fixed_port=${NEARLOOP_IMAGE_SIDECAR_PORT:+1}
+port=${NEARLOOP_IMAGE_SIDECAR_PORT:-$(cat "$dir/port" 2>/dev/null)}
+[[ $port == <1024-65535> ]] || port=8765
 idle=${NEARLOOP_IMAGE_SIDECAR_IDLE:-300}
 server="$dir/llama/llama-server"
 model="$dir/gemma-3-4b-it-qat-Q4_0.gguf"
@@ -49,13 +54,24 @@ if ! sips -s format png -Z 1600 "$image" --out "$png" >/dev/null 2>&1; then
   die "Could not read $image as an image." 65
 fi
 
-healthy() { curl -s -m 2 -o /dev/null -w '%{http_code}' "$base/health" 2>/dev/null | grep -q '^200$'; }
 # Whether a pid is our llama-server (pids are reused, and server.pid can outlive the process it named). Right after
 # the spawn, ps can still show the command as "nohup <server> …" for a moment.
 ours() {
   [[ -n $1 ]] || return 1
   local cmd=$(ps -o command= -p "$1" 2>/dev/null)
   [[ $cmd == "$server "* || $cmd == "nohup $server "* ]]
+}
+# The pid listening on a port (the server's by default), if any.
+listening() { lsof -nP -t -iTCP:"${1:-$port}" -sTCP:LISTEN 2>/dev/null | head -1; }
+# Up: our llama-server listens on the port and answers. Another app's server on that port doesn't count.
+healthy() {
+  ours "$(listening)" && curl -s -m 2 -o /dev/null -w '%{http_code}' "$base/health" 2>/dev/null | grep -q '^200$'
+}
+# The port another caller moved the server to while this one waited.
+follow_port() {
+  [[ -n $fixed_port ]] && return
+  local moved=$(cat "$dir/port" 2>/dev/null)
+  [[ $moved == <1024-65535> ]] && { port=$moved; base="http://127.0.0.1:$port"; }
 }
 
 # Memory macOS can hand out without swapping, as Activity Monitor counts it: everything but wired, compressed and
@@ -92,6 +108,20 @@ start_server() {
       # (the lock goes with this exit, and with no pid file a caller waiting on it gives up at once)
       die "Not enough free memory for the vision model: ${free} GB free, about ${need_gb} GB needed. Close other apps or unload a model, then try again." 75
     fi
+    # Another app on the port: the server moves to the next free one, kept in $dir/port for the next run and for
+    # Nearloop (Settings › Images shows it).
+    local holder=$(listening)
+    if [[ -n $holder ]]; then
+      local name=$(ps -o comm= -p "$holder" 2>/dev/null); name=${name:t}
+      [[ -n $fixed_port ]] && die "Port $port (NEARLOOP_IMAGE_SIDECAR_PORT) is in use by ${name:-another app}." 75
+      local p found=
+      for (( p = port + 1; p <= port + 100 && p <= 65535; p++ )); do
+        [[ -z $(listening $p) ]] && { found=$p; break; }
+      done
+      [[ -n $found ]] || die "Port $port is in use by ${name:-another app}, and no free port was found after it." 75
+      port=$found; base="http://127.0.0.1:$port"
+    fi
+    [[ -n $fixed_port ]] || print -r -- "$port" >"$dir/port"
     nohup "$server" -m "$model" --mmproj "$mmproj" --host 127.0.0.1 --port "$port" \
       -c 8192 -ngl 99 -np 1 --no-webui --alias gemma-3-4b >"$dir/server.log" 2>&1 &
     local pid=$!
@@ -117,7 +147,7 @@ start_server() {
   # gives up as soon as that start is over without a server: the lock gone and no pid written (refused for memory),
   # or a pid that is no longer our server (it died).
   local waited=0
-  while ! healthy; do
+  while follow_port; ! healthy; do
     if [[ -f "$dir/server.pid" ]] && ! ours "$(<"$dir/server.pid")"; then
       die "The vision server stopped while starting. Its log: $dir/server.log" 70
     fi

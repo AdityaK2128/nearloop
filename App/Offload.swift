@@ -272,9 +272,15 @@ final class Offload: ObservableObject {
 
     /// Whether the engine on `port` is this one (Home and the menu name it).
     func owns(port: Int) -> Bool { (running || state == .starting) && saved.pid != 0 && saved.port == port }
-    var externalName: String { owns(port: Prefs.port) ? "\(saved.modelName) with iPhone" : "External Server" }
-    /// Serving on Nearloop's port, so the app treats it as its loaded model: chat, agents, Stop.
-    var serving: Bool { owns(port: Prefs.port) }
+    /// What serves the port Home shows: this, or the app that holds it ("SomeApp"), else "External Server".
+    var externalName: String {
+        if serving { return "\(saved.modelName) with iPhone" }
+        let holder = ServerController.shared.externalHolder
+        return holder.isEmpty ? "External Server" : holder
+    }
+    /// Serving (on the port in Settings › Server, or the free one chosen when an app held that), so the app treats
+    /// it as its loaded model: chat, agents, Stop.
+    var serving: Bool { owns(port: saved.port) }
 
     // MARK: - Checks
 
@@ -583,10 +589,8 @@ final class Offload: ObservableObject {
                 note("Stopping the Kapitsa server to free memory and port \(server.port)")
                 server.stopAndWait()
             }
-            let port = Prefs.port
-            if await Task.detached(operation: { ServerController.listener(port) }).value != 0 {
-                throw Kapitsa.Failure(errorDescription: "Port \(port) is in use by another application. Stop it or change the port in Settings › Server.")
-            }
+            // The port in Settings › Server, or a free one the person chooses when another app holds that.
+            guard let port = try await server.choosePort(for: "\(model.name) with iPhone") else { throw CancellationError() }
 
             activity = "Reading \(model.name)…"
             let inspection = try await inspection(for: model)

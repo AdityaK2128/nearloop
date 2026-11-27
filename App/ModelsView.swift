@@ -168,7 +168,7 @@ private struct ModelDetail: View {
                     Button("Stop", role: .destructive) { server.stop() }.controlSize(.large)
                 } else {
                     Button { store.load(model) } label: { Label("Load Model", systemImage: "play.fill") }
-                        .buttonStyle(.borderedProminent).controlSize(.large).disabled(server.running || relocating || bench.running != nil)
+                        .buttonStyle(.borderedProminent).controlSize(.large).disabled(!server.canLoad || relocating || bench.running != nil)
                         .help(bench.running != nil ? "A benchmark is running" : "")
                 }
             }
@@ -193,7 +193,7 @@ private struct ModelDetail: View {
                         Label("Coding agents need 64K or more, and Claude Code works best at 128K; on \(model.contextLabel(store.context)) their replies get cut off within a few steps.",
                               systemImage: "lightbulb").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Button("Use \(model.contextLabel(suggestion).replacingOccurrences(of: " (Max)", with: ""))") { store.context = suggestion }
-                            .controlSize(.small).disabled(server.running)
+                            .controlSize(.small).disabled(!server.canLoad)
                     }
                 }
             }
@@ -217,8 +217,11 @@ private struct ModelDetail: View {
                       systemImage: limited ? "info.circle" : "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if server.running && !isLoaded {
+            if !server.canLoad && !isLoaded {
                 Text("Another model is running. Stop it to load this one.").font(.caption).foregroundStyle(.secondary)
+            } else if server.phase == .external {
+                Text("\(server.externalHolder.isEmpty ? "Another app" : server.externalHolder) is using port \(String(server.externalPort)). Loading this model offers a free port instead.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if isLoaded && server.phase == .ready && !model.verified {
                 Button("Verify Model") { Task { await store.verify(model) } }

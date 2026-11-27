@@ -149,10 +149,18 @@ struct ServerSettings: View {
     @AppStorage("diskCache") private var diskCache = "auto"
     @AppStorage("shareOnNetwork") private var share = false
     @AppStorage("apiKey") private var apiKey = ""
+    @ObservedObject private var server = ServerController.shared
 
     var body: some View {
         Form {
             TextField("Port", value: $port, format: .number.grouping(.never))
+            if server.phase == .external, server.externalPort == port, !server.externalHolder.isEmpty {
+                Text("\(server.externalHolder) is using port \(String(port)). Loading a model offers the next free port, for that time or from then on.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if let record = server.record, record.port != port {
+                Text("The loaded model runs on port \(String(record.port)); port \(String(port)) applies from the next load.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Picker("Concurrent Requests", selection: $slots) {
                 Text("Automatic (up to 4)").tag(0)
                 ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
@@ -628,7 +636,7 @@ struct ImagesSettings: View {
                 if downloaded {
                     LabeledContent("Vision Server") {
                         HStack(spacing: 8) {
-                            Text(serverUp ? "Running on 127.0.0.1:8765 · stops after 5 idle minutes" : "Not running · starts with the first image").foregroundStyle(.secondary)
+                            Text(serverUp ? "Running on 127.0.0.1:\(String(ImageSidecar.port)) · stops after 5 idle minutes" : "Not running · starts with the first image").foregroundStyle(.secondary)
                             if serverUp { Button("Stop") { ImageSidecar.stopServer(); Task { await checkServer() } }.controlSize(.small) }
                         }
                     }

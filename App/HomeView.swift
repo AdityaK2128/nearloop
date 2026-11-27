@@ -119,7 +119,8 @@ private struct ServerCard: View {
         } else if case .failed(let reason) = server.phase {
             Text(reason)
         } else if server.phase == .external {
-            Text("Port \(String(server.externalPort))  ·  " + (Offload.shared.owns(port: server.externalPort) ? "iPhone Offload (Experimental)" : "Managed outside this app"))
+            Text("Port \(String(server.externalPort))  ·  " + (Offload.shared.owns(port: server.externalPort) ? "iPhone Offload (Experimental)"
+                 : (server.externalHolder.isEmpty ? "Managed outside this app" : "\(server.externalHolder), outside Nearloop") + ". Loading a model offers another port."))
         } else if let model = suggestion {
             Text(model.name + speedNote(model))
         } else {
@@ -156,7 +157,7 @@ private struct ServerCard: View {
                 Button("Details") { store.page = .experimental }
                 Button("Stop", role: .destructive) { Offload.shared.stop() }
             }
-            if !server.running {
+            if server.canLoad {
                 Button("Choose Model…") { store.page = .models }
                 if let model = suggestion {
                     Button("Load Model") { store.load(model, context: model.accepts(Prefs.lastContext) ? Prefs.lastContext : nil) }
