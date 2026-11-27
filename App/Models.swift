@@ -172,14 +172,15 @@ enum ModelScanner {
         }
     }
 
-    /// Kapitsa's `is_complete`: the manifest is there and every file it lists has the listed size.
+    /// Kapitsa's `is_complete`: the manifest is there and every file it lists has the listed size. Kapitsa measures
+    /// with stat(), which follows symbolic links, so a listed file that is a link counts by the file it points to.
     static func kapitsaComplete(_ url: URL) -> Bool {
         guard let manifest = readJSON(url.appendingPathComponent(".kapitsa/manifest.json")),
               let files = manifest["files"] as? [[String: Any]] else { return false }
         let fm = FileManager.default
         return files.allSatisfy { file in
             guard let path = file["path"] as? String, let size = file["size"] as? NSNumber else { return false }
-            let attributes = try? fm.attributesOfItem(atPath: url.appendingPathComponent(path).path)
+            let attributes = try? fm.attributesOfItem(atPath: url.appendingPathComponent(path).resolvingSymlinksInPath().path)
             return (attributes?[.size] as? NSNumber)?.int64Value == size.int64Value
         }
     }
@@ -225,7 +226,9 @@ enum ModelScanner {
         // is: a folder still being filled is neither a drafter, nor unsupported, nor one for another engine yet.
         if fm.fileExists(atPath: url.appendingPathComponent(".kapitsa").path), !kapitsaComplete(url) {
             row.status = .incomplete
-            row.reason = "Download not finished: resume it in Discover, or `kapitsa pull \(url.lastPathComponent)`."
+            // (No `kapitsa pull <folder>` hint: for an org--name folder Kapitsa reads the name as a local folder and
+            // downloads nothing, and a terminal may not share Nearloop's KAPITSA_HOME.)
+            row.reason = "Download not finished: resume it in Discover."
             return row
         }
         let classes = (config["architectures"] as? [String]) ?? []
