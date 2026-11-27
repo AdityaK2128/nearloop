@@ -15,7 +15,8 @@ struct BenchmarksView: View {
     struct Row: Identifiable {
         let id: String
         let name: String
-        let writing: Double
+        let writing: Double?
+        let note: String?
         let reading: Double
         let firstToken: Double
         let toolsPass: Bool
@@ -27,13 +28,13 @@ struct BenchmarksView: View {
     var rows: [Row] {
         let all = store.benchmarks.map { result in
             Row(id: result.id, name: store.model(at: result.modelPath ?? "")?.name ?? result.modelName,
-                writing: result.writing ?? 0, reading: result.reading ?? 0, firstToken: result.firstToken ?? 0,
+                writing: result.writing, note: result.noGeneration, reading: result.reading ?? 0, firstToken: result.firstToken ?? 0,
                 toolsPass: result.toolsPass, peak: result.peakGB ?? 0,
                 decoding: result.usesDrafter ? "DFlash2" : result.decoding.contains("MTP") ? "MTP" : "Standard",
                 date: result.date ?? .distantPast)
         }
         switch sort {
-        case .writing: return all.sorted { $0.writing > $1.writing }
+        case .writing: return all.sorted { ($0.writing ?? -1) > ($1.writing ?? -1) }
         case .reading: return all.sorted { $0.reading > $1.reading }
         case .memory: return all.sorted { $0.peak < $1.peak }
         case .name: return all.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -71,7 +72,7 @@ struct BenchmarksView: View {
     }
 
     private func resultsTable(compact: Bool) -> some View {
-        let fastest = max(1, rows.map(\.writing).max() ?? 1)
+        let fastest = max(1, rows.compactMap(\.writing).max() ?? 1)
         return Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 0) {
             GridRow {
                 Text("Model")
@@ -89,11 +90,12 @@ struct BenchmarksView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(row.name).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
                         Capsule().fill(Color.accentColor.opacity(0.55))
-                            .frame(width: max(4, 150 * row.writing / fastest), height: 3)
+                            .frame(width: row.writing.map { max(4, 150 * $0 / fastest) } ?? 4, height: 3)
                     }
                     // The name column takes the room the numbers leave, so names truncate only when it runs out.
                     .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading).layoutPriority(1)
-                    Text(String(format: "%.1f", row.writing)).fontWeight(.semibold).monospacedDigit()
+                    Text(row.writing.map { String(format: "%.1f", $0) } ?? "—").fontWeight(.semibold).monospacedDigit()
+                        .foregroundStyle(row.writing == nil ? .secondary : .primary).help(row.note ?? "")
                     Text(String(format: "%.0f", row.reading)).monospacedDigit()
                     Text(String(format: "%.1f s", row.firstToken)).monospacedDigit()
                     Label(row.toolsPass ? "Pass" : "Fail", systemImage: row.toolsPass ? "checkmark.circle.fill" : "xmark.circle")
