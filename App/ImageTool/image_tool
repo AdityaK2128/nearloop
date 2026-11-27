@@ -50,8 +50,13 @@ if ! sips -s format png -Z 1600 "$image" --out "$png" >/dev/null 2>&1; then
 fi
 
 healthy() { curl -s -m 2 -o /dev/null -w '%{http_code}' "$base/health" 2>/dev/null | grep -q '^200$'; }
-# Whether a pid is our llama-server (pids are reused, and server.pid can outlive the process it named).
-ours() { [[ -n $1 ]] && [[ $(ps -o command= -p "$1" 2>/dev/null) == "$server "* ]]; }
+# Whether a pid is our llama-server (pids are reused, and server.pid can outlive the process it named). Right after
+# the spawn, ps can still show the command as "nohup <server> …" for a moment.
+ours() {
+  [[ -n $1 ]] || return 1
+  local cmd=$(ps -o command= -p "$1" 2>/dev/null)
+  [[ $cmd == "$server "* || $cmd == "nohup $server "* ]]
+}
 
 # Memory macOS can hand out without swapping, as Activity Monitor counts it: everything but wired, compressed and
 # app memory. The model, its projector and an 8K context take about 4.5 GB on the GPU.
@@ -81,11 +86,12 @@ start_server() {
   mkdir -p "$dir"
   if take_lock; then
     if healthy; then release_lock; return; fi  # (another caller's server came up while the lock changed hands)
+    rm -f "$dir/server.pid"
     local free=$(free_gb)
     if (( free < need_gb )); then
+      # (the lock goes with this exit, and with no pid file a caller waiting on it gives up at once)
       die "Not enough free memory for the vision model: ${free} GB free, about ${need_gb} GB needed. Close other apps or unload a model, then try again." 75
     fi
-    rm -f "$dir/server.pid"
     nohup "$server" -m "$model" --mmproj "$mmproj" --host 127.0.0.1 --port "$port" \
       -c 8192 -ngl 99 -np 1 --no-webui --alias gemma-3-4b >"$dir/server.log" 2>&1 &
     local pid=$!
@@ -96,7 +102,7 @@ start_server() {
     # signals the pid only while that pid is still our llama-server.
     nohup zsh -c '
       pid=$1; dir=$2; idle=$3; server=$4
-      ours() { [[ $(ps -o command= -p "$pid" 2>/dev/null) == "$server "* ]]; }
+      ours() { local c=$(ps -o command= -p "$pid" 2>/dev/null); [[ $c == "$server "* || $c == "nohup $server "* ]]; }
       while sleep 30; do
         ours || break
         last=$(stat -f %m "$dir/last-used" 2>/dev/null || print 0)
@@ -107,11 +113,16 @@ start_server() {
       [[ $(<"$dir/server.pid" 2>/dev/null) == "$pid" ]] && rm -f "$dir/server.pid"' watchdog "$pid" "$dir" "$idle" "$server" >/dev/null 2>&1 &
     disown %% 2>/dev/null
   fi
-  # Loading takes a few seconds; the first run after a download a little longer.
+  # Loading takes a few seconds; the first run after a download a little longer. A caller waiting on another's start
+  # gives up as soon as that start is over without a server: the lock gone and no pid written (refused for memory),
+  # or a pid that is no longer our server (it died).
   local waited=0
   while ! healthy; do
     if [[ -f "$dir/server.pid" ]] && ! ours "$(<"$dir/server.pid")"; then
       die "The vision server stopped while starting. Its log: $dir/server.log" 70
+    fi
+    if (( ! held_lock )) && [[ ! -d $lock && ! -f "$dir/server.pid" ]]; then
+      die "The vision server did not start (the caller starting it gave up; not enough free memory, most likely). Try again once memory is free." 75
     fi
     (( waited >= 360 )) && die "The vision server didn't answer within 3 minutes. Its log: $dir/server.log" 70
     sleep 0.5; (( waited += 1 ))

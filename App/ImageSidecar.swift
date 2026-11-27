@@ -18,8 +18,10 @@ enum ImageSidecar {
     static let runnerURL = URL(string: "https://github.com/ggml-org/llama.cpp/releases/download/\(runnerBuild)/llama-\(runnerBuild)-bin-macos-arm64.tar.gz")!
     static let runnerBytes: Int64 = 16_644_358
     static let runnerSHA256 = "264fd872de61679c45ad57e1e21c2a2a54e29b35734ecf3d50f24166447ab8d2"
-    /// Google's quantization-aware Gemma 3 4B instruct, as ggml-org publishes it, with its vision projector.
+    /// Google's quantization-aware Gemma 3 4B instruct, as ggml-org publishes it, with its vision projector, at the
+    /// repository commit the hashes below belong to (a later re-upload would otherwise fail the check until a new build).
     static let modelRepo = "ggml-org/gemma-3-4b-it-qat-GGUF"
+    static let modelRevision = "bbcac0d065076c47042838c0675c602411b0dd4c"
     static let modelFile = "gemma-3-4b-it-qat-Q4_0.gguf"
     static let modelBytes: Int64 = 2_526_080_992
     static let modelSHA256 = "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a"
@@ -276,7 +278,7 @@ final class ImageSidecarDownload: ObservableObject {
                     let partial = folder.appendingPathComponent(name + ".part")
                     job?.lastLine = "Downloading \(name)…"
                     let code = await run("/usr/bin/curl", ["-fsSL", "--retry", "3", "-C", "-", "-o", partial.path,
-                                                          "https://huggingface.co/\(ImageSidecar.modelRepo)/resolve/main/\(name)"])
+                                                          "https://huggingface.co/\(ImageSidecar.modelRepo)/resolve/\(ImageSidecar.modelRevision)/\(name)"])
                     if job?.state == .pausing { job?.state = .paused; return }
                     guard code == 0 else { throw Kapitsa.Failure(errorDescription: "Downloading \(name) failed (curl \(code)). Retry to resume it.") }
                     guard ImageSidecar.size(partial) == bytes else {
@@ -315,6 +317,7 @@ final class ImageSidecarDownload: ObservableObject {
                 try? ImageSidecar.runnerBuild.write(to: llama.appendingPathComponent("BUILD"), atomically: true, encoding: .utf8)
                 try ImageSidecar.runnerSHA256.write(to: ImageSidecar.runnerRecord, atomically: true, encoding: .utf8)
                 try? fm.removeItem(at: archive)
+                try? fm.removeItem(at: ImageSidecar.record(for: archive))  // (the runner's record is llama/SHA256)
             }
             job?.state = .finished
             job?.done = ImageSidecar.totalBytes
