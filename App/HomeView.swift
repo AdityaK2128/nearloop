@@ -119,8 +119,8 @@ private struct ServerCard: View {
         } else if case .failed(let reason) = server.phase {
             Text(reason)
         } else if server.phase == .external {
-            Text("Port \(String(server.externalPort))  ·  " + (Offload.shared.owns(port: server.externalPort) ? "iPhone Offload (Experimental)"
-                 : (server.externalHolder.isEmpty ? "Managed outside this app" : "\(server.externalHolder), outside Nearloop") + ". Loading a model offers another port."))
+            let holder = Offload.shared.owns(port: server.externalPort) ? "iPhone Offload (Experimental)" : server.externalHolder
+            Text(([ "Port \(String(server.externalPort))", holder.isEmpty ? nil : holder ].compactMap { $0 }).joined(separator: "  ·  "))
         } else if let model = suggestion {
             Text(model.name + speedNote(model))
         } else {
