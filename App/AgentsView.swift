@@ -263,6 +263,8 @@ private struct CustomAgentEditor: View {
     let remove: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var confirmRemove = false
+    private enum Field { case name, command }
+    @FocusState private var focused: Field?
 
     private var isNew: Bool { savedName == nil }
 
@@ -273,25 +275,37 @@ private struct CustomAgentEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(savedName.map { "Edit \($0)" } ?? "Add an Agent").font(.title2.weight(.semibold))
-            Form {
-                TextField("Name", text: $agent.name, prompt: Text("OMP"))
-                TextField("Command", text: $agent.command, prompt: Text("omp"))
-                    .font(.system(.body, design: .monospaced))
-                VStack(alignment: .leading, spacing: 6) {
+            // Plain bordered fields, labels on the left: a grouped Form shows a field as borderless text at the
+            // right edge, so its example reads as fixed text rather than a box to type in.
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow {
+                    Text("Name").gridColumnAlignment(.trailing)
+                    TextField("Name", text: $agent.name, prompt: Text("e.g. OMP"))
+                        .labelsHidden().textFieldStyle(.roundedBorder).focused($focused, equals: .name)
+                }
+                GridRow {
+                    Text("Command")
+                    TextField("Command", text: $agent.command, prompt: Text("e.g. omp"))
+                        .labelsHidden().textFieldStyle(.roundedBorder).focused($focused, equals: .command)
+                        .font(.system(.body, design: .monospaced))
+                }
+                GridRow(alignment: .top) {
                     Text("Environment")
-                    TextEditor(text: $agent.environment)
-                        .font(.system(.callout, design: .monospaced))
-                        .frame(height: 90)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                    Text("Optional. One KEY=value per line, for agents that need more than the variables below.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if !agent.invalidLines.isEmpty {
-                        Text("Not KEY=value: " + agent.invalidLines.joined(separator: ", "))
-                            .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextEditor(text: $agent.environment)
+                            .font(.system(.callout, design: .monospaced))
+                            .frame(height: 90)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                        Text("Optional. One KEY=value per line, for agents that need more than the variables below.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !agent.invalidLines.isEmpty {
+                            Text("Not KEY=value: " + agent.invalidLines.joined(separator: ", "))
+                                .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                        }
                     }
                 }
             }
-            .formStyle(.grouped)
+            .onAppear { focused = .name }
             VStack(alignment: .leading, spacing: 6) {
                 Text("The agent starts in the project folder with OPENAI_BASE_URL, OPENAI_API_KEY, ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY pointing at the running model, which most agents read. If yours reads its own settings file instead, point that at the server address shown on Home. In the command and the environment, these are filled in at launch:")
                     .fixedSize(horizontal: false, vertical: true)
@@ -307,6 +321,9 @@ private struct CustomAgentEditor: View {
             HStack {
                 if !isNew { Button("Remove…", role: .destructive) { confirmRemove = true } }
                 Spacer()
+                if !valid && agent.invalidLines.isEmpty {
+                    Text("Needs a name and a command").font(.caption).foregroundStyle(.secondary)
+                }
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(isNew ? "Add" : "Save") {
                     agent.name = agent.name.trimmingCharacters(in: .whitespaces)
