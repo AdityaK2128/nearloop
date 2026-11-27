@@ -154,6 +154,12 @@ final class BenchmarkRunner: ObservableObject {
                 } else {
                     self.outcome = Kapitsa.reason(in: self.lines)
                         ?? "Benchmark ended without a result (code \(ended.terminationStatus))."
+                    // "The server stopped while loading the model. Its log: <path>": the refusal is in that log.
+                    if let range = self.outcome?.range(of: "Its log: "), let logPath = self.outcome?[range.upperBound...].trimmingCharacters(in: .whitespaces),
+                       let text = try? String(contentsOfFile: (logPath as NSString).expandingTildeInPath, encoding: .utf8) {
+                        ModelScanner.rememberRefusal(of: model.path, from: text.components(separatedBy: "\n"))
+                        Task { await AppStore.shared.scan() }
+                    }
                 }
                 self.process = nil
                 self.running = nil

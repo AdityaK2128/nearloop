@@ -432,6 +432,7 @@ final class ServerController: ObservableObject {
         live = LiveActivity()
         if let log = record?.log { readLog(log) }  // pick up the final lines before reporting
         let wasStopping = phase == .stopping, neverReady = phase == .starting
+        let modelPath = record?.modelPath
         clear()
         // The terminal wrapper may exit cleanly even when Kapitsa fails, so a server that never became ready failed.
         if wasStopping || (!neverReady && [0, 2, 15, 130, 143].contains(code)) {
@@ -439,6 +440,11 @@ final class ServerController: ObservableObject {
         } else {
             let hint = Kapitsa.reason(in: logLines) ?? logLines.last ?? ""
             phase = .failed(hint.isEmpty ? "Kapitsa exited with code \(code)." : hint.replacingOccurrences(of: "[kapitsa] ", with: ""))
+            // Kapitsa refused the model itself while loading: the Library shows the folder as Unsupported from now on.
+            if neverReady, let modelPath {
+                ModelScanner.rememberRefusal(of: modelPath, from: logLines)
+                Task { await AppStore.shared.scan() }
+            }
         }
     }
 

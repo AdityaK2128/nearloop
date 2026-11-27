@@ -216,6 +216,12 @@ enum ModelScanner {
             row.reason = "Architecture not supported by Kapitsa."
             return row
         }
+        // A folder this engine refused to load (a conversion in a format Kapitsa doesn't read, say) stays Unsupported,
+        // with Kapitsa's own words, until the folder or the engine changes.
+        if let refusal = refusal(of: url) {
+            row.reason = "Kapitsa couldn’t load it: \(refusal). Remembered until the folder or the engine changes."
+            return row
+        }
         // The type the engine looks at is the language model's: llm_config (Nemotron Omni releases such as 3.5
         // Super VL, whose top-level model_type is nemotron_h_omni) or text_config when there is one, else the file's.
         let textType = ((config["llm_config"] as? [String: Any])?["model_type"] as? String)
@@ -303,9 +309,7 @@ enum ModelScanner {
     /// engine whose binary doesn't contain the name can't load it (a model added to Kapitsa after the engine was
     /// released). nil when there is no engine to ask. Each engine file is mapped, not read, and kept per file and date.
     static func engineRuns(_ type: String) -> Bool? {
-        guard !type.isEmpty, let engine = Kapitsa.binary?.resolvingSymlinksInPath() else { return nil }
-        let date = (try? engine.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        let key = engine.path + "|" + String(date?.timeIntervalSince1970 ?? 0)
+        guard !type.isEmpty, let engine = Kapitsa.binary?.resolvingSymlinksInPath(), let key = engineKey() else { return nil }
         engineLock.lock(); defer { engineLock.unlock() }
         if engineFile?.key != key {
             guard let data = try? Data(contentsOf: engine, options: .alwaysMapped) else { return nil }
@@ -315,6 +319,46 @@ enum ModelScanner {
     }
     private static let engineLock = NSLock()
     nonisolated(unsafe) private static var engineFile: (key: String, data: Data)?
+
+    /// The engine in use, as a file and its date: a rebuilt or swapped engine is another key.
+    static func engineKey() -> String? {
+        guard let engine = Kapitsa.binary?.resolvingSymlinksInPath() else { return nil }
+        let date = (try? engine.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return engine.path + "|" + String(date?.timeIntervalSince1970 ?? 0)
+    }
+
+    /// A model folder as it is: its own and its config's modification dates, and its weight files' names and sizes,
+    /// so a folder that was refilled, re-converted or had files added or removed reads as another folder.
+    static func stamp(_ url: URL) -> String {
+        let fm = FileManager.default
+        func date(_ path: String) -> String {
+            String(((try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date)?.timeIntervalSince1970 ?? 0)
+        }
+        let files = ((try? fm.contentsOfDirectory(atPath: url.path)) ?? []).filter { $0.hasSuffix(".safetensors") || $0.hasSuffix(".gguf") }.sorted()
+        let weights = files.map { "\($0):\(fm.sizeFollowingLinks(atPath: url.appendingPathComponent($0).path))" }.joined(separator: ",")
+        return date(url.path) + "|" + date(url.appendingPathComponent("config.json").path) + "|" + weights
+    }
+
+    /// Remembers that the engine refused to load a folder, from the `fatal:` line Kapitsa printed, so the scan shows
+    /// it as Unsupported with Kapitsa's own words until the folder or the engine changes. Nothing is kept for a
+    /// failure that is not Kapitsa's refusal of the model itself (a port in use, memory, a missing file).
+    static func rememberRefusal(of path: String, from lines: [String]) {
+        guard let line = lines.last(where: { $0.contains("fatal:") }), let key = engineKey() else { return }
+        var message = line[line.range(of: "fatal:")!.upperBound...].trimmingCharacters(in: .whitespaces)
+        // Kapitsa names the folder first ("<dir>: missing tensor …", the dir being the model's or a benchmark's link
+        // to it); the Library already shows which folder.
+        if message.hasPrefix("/"), let colon = message.range(of: ": ") { message = String(message[colon.upperBound...]) }
+        var all = Prefs.loadRefusals
+        all[path] = ["message": message, "engine": key, "stamp": stamp(URL(fileURLWithPath: path))]
+        Prefs.loadRefusals = all
+    }
+
+    /// Kapitsa's refusal of this folder, if the engine and the folder are still the ones it refused.
+    static func refusal(of url: URL) -> String? {
+        guard let kept = Prefs.loadRefusals[url.path], let message = kept["message"] else { return nil }
+        guard kept["engine"] == engineKey(), kept["stamp"] == stamp(url) else { return nil }
+        return message
+    }
 
     static func family(_ config: [String: Any]) -> String? {
         let type = config["model_type"] as? String ?? ""

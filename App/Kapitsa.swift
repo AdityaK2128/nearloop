@@ -40,6 +40,13 @@ enum Prefs {
         guard let value = defaults.object(forKey: "slots") as? Int else { return 1 }
         return value == 0 ? nil : max(1, value)
     }
+    /// Folders Kapitsa refused to load (a `fatal:` while loading, such as a missing tensor), by model path: the
+    /// message, the engine that refused (ModelScanner.engineKey) and the folder as it was (ModelScanner.stamp). The
+    /// scan shows such a folder as Unsupported with that message until the folder or the engine changes.
+    static var loadRefusals: [String: [String: String]] {
+        get { (defaults.dictionary(forKey: "loadRefusals") as? [String: [String: String]]) ?? [:] }
+        set { defaults.set(newValue, forKey: "loadRefusals") }
+    }
     /// KV-cache bytes per token Kapitsa reported when each model last loaded, by model path.
     static var kvMeasured: [String: Int] {
         get { (defaults.dictionary(forKey: "kvBytesPerToken") as? [String: Int]) ?? [:] }
