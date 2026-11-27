@@ -264,13 +264,13 @@ private struct ModelDetail: View {
         Picker("Context", selection: $store.context) {
             ForEach(model.contextOptions(including: store.context), id: \.self) { Text(model.contextLabel($0).replacingOccurrences(of: " (Max)", with: "")).tag($0) }
         }
-        .pickerStyle(.segmented).labelsHidden().fixedSize(horizontal: fitted, vertical: true).disabled(server.running)
+        .pickerStyle(.segmented).labelsHidden().fixedSize(horizontal: fitted, vertical: true).disabled(!server.canLoad)
         .help("Tokens per conversation. Larger contexts use more memory.")
     }
 
     private var customContextField: some View {
         TextField("Custom", text: $customContext)
-            .textFieldStyle(.roundedBorder).frame(width: 90).disabled(server.running)
+            .textFieldStyle(.roundedBorder).frame(width: 90).disabled(!server.canLoad)
             .help(model.nativeContext != nil ? "Any context from \(shortTokens(LocalModel.smallestCustom)) to \(model.contextLabel("max").replacingOccurrences(of: " (Max)", with: "")): 200k, 204800 or 1m. Press Return to use it."
                   : "This model doesn’t state its context limit, so only the sizes shown can be used.")
             .onSubmit { useCustomContext() }
@@ -343,8 +343,8 @@ private struct ModelDetail: View {
                     ProgressView().controlSize(.small)
                     Button("View Progress") { store.page = .benchmarks }
                 } else {
-                    Button("Run Benchmark") { store.runBenchmark(model) }.disabled(bench.running != nil || server.running)
-                        .help(server.running ? "Stop the running model to benchmark" : "Takes 3–8 minutes. Stops automatically if memory runs low.")
+                    Button("Run Benchmark") { store.runBenchmark(model) }.disabled(bench.running != nil || !server.canLoad)
+                        .help(!server.canLoad ? "Stop the running model to benchmark" : "Takes 3–8 minutes. Stops automatically if memory runs low.")
                 }
             }
             if let result = store.benchmark(for: model) {
@@ -370,7 +370,7 @@ private struct ModelDetail: View {
             Text("Convert to Kapitsa Format").font(.headline)
             Text("Creates a new model folder. The original file remains unchanged, and a preview validates the format first.")
                 .font(.callout).foregroundStyle(.secondary)
-            Button("Convert…") { store.importTarget = model }.disabled(server.running)
+            Button("Convert…") { store.importTarget = model }.disabled(!server.canLoad)
         }.card()
     }
 
