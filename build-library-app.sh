@@ -34,6 +34,9 @@ cp "$project_dir/icon/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 # Experimental › iPhone Offload: the Python side, run with the user's installed oMLX.
 mkdir -p "$app/Contents/Resources/offload"
 cp "$project_dir"/App/Offload/*.py "$app/Contents/Resources/offload/"
+# Settings › Images: the image_tool command the agents run, installed to ~/.local/bin from here.
+cp "$project_dir/App/ImageTool/image_tool" "$app/Contents/Resources/image_tool"
+chmod 755 "$app/Contents/Resources/image_tool"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

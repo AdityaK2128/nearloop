@@ -55,12 +55,29 @@ enum Prefs {
         get { defaults.data(forKey: "customAgents").flatMap { try? JSONDecoder().decode([CustomAgent].self, from: $0) } ?? [] }
         set { defaults.set(try? JSONEncoder().encode(newValue), forKey: "customAgents") }
     }
+    /// Settings › Images: describe images with the vision sidecar for models that can't read them.
+    static var imageSidecar: Bool {
+        get { defaults.bool(forKey: "imageSidecar") }
+        set { defaults.set(newValue, forKey: "imageSidecar") }
+    }
+    /// Whether each model read images when it last ran here, by model path: from the engine's log ("images on" at
+    /// engine ready; "left out: this model can't read images" on a request).
+    static var modelReadsImages: [String: Bool] {
+        get { (defaults.dictionary(forKey: "modelReadsImages") as? [String: Bool]) ?? [:] }
+        set { defaults.set(newValue, forKey: "modelReadsImages") }
+    }
     static var diskCache: String { defaults.string(forKey: "diskCache").flatMap { $0.isEmpty ? nil : $0 } ?? "auto" }
     static var shareOnNetwork: Bool { defaults.bool(forKey: "shareOnNetwork") }
     static var terminal: String { defaults.string(forKey: "terminalApp") ?? "terminal" }
     static var runtimeFolder: String? { defaults.string(forKey: "runtimeFolder").flatMap { $0.isEmpty ? nil : $0 } }
     /// The kapitsa executable chosen in Settings › Engine; nil runs the copy bundled in the app.
     static var engine: String? { defaults.string(forKey: "enginePath").flatMap { $0.isEmpty ? nil : $0 } }
+    /// The agents' instruction files Nearloop made itself for the image_tool line (Settings › Images), so that
+    /// only those are removed again; a file that was there already is never deleted.
+    static var imageToolCreated: [String] {
+        get { defaults.stringArray(forKey: "imageToolCreated") ?? [] }
+        set { defaults.set(newValue, forKey: "imageToolCreated") }
+    }
     /// Kapitsa's fast profile (docs/profiles.md): the speedups that move outputs no more than the fastest other engine
     /// does, for the Macs and models each one targets. Off: precise, the exact outputs.
     static var fastProfile: Bool { defaults.bool(forKey: "fastProfile") }

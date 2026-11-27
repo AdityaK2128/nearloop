@@ -36,6 +36,11 @@ struct LogStats {
     var promptCacheLimit: String?
     var promptCacheRestored = 0
     var promptCacheNoRoom = false
+    /// Whether the loaded model reads images: ", images on" at engine ready says yes, its absence no; a request
+    /// whose images were "left out: this model can't read images" says no too.
+    var readsImages: Bool?
+    /// Requests whose images the engine dropped, so far.
+    var imagesRefused = 0
     var lastLine = ""
 
     /// The context a conversation can actually use: Kapitsa's fit, else the configured context.
@@ -70,7 +75,8 @@ struct LogStats {
     mutating func consume(_ line: String) -> Bool {
         guard !line.isEmpty else { return false }
         lastLine = line
-        if let g = Self.groups(Self.engine, line) { model = g[0]; context = Int(g[1]); decoding = g[2] }
+        if let g = Self.groups(Self.engine, line) { model = g[0]; context = Int(g[1]); decoding = g[2]; readsImages = line.contains(", images on") }
+        if line.contains("left out: this model can't read images") || line.contains("left out: this model can’t read images") { imagesRefused += 1; readsImages = false }
         if let g = Self.groups(Self.memory, line) { allocated = g[0]; budget = g[1] }
         if let g = Self.groups(Self.fit, line) { usableContext = Int(g[0]) }
         if let g = Self.groups(Self.perToken, line) { kvPerTokenKB = Int(g[0]) }
@@ -497,6 +503,12 @@ final class ServerController: ObservableObject {
                 phase = .stopped
             }
         }
+    }
+
+    /// Reads what the engine logged since the last look, now rather than at the next half-second tick: Chat asks
+    /// right after a reply whether its images went in.
+    func refreshLog() {
+        if let log = record?.log { readLog(log) }
     }
 
     private func readLog(_ path: String) {

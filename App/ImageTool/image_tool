@@ -1,0 +1,167 @@
+#!/bin/zsh
+# image_tool — Installed by Nearloop. Describes an image with a small vision model running on this Mac, for models
+# and coding agents that can't read images themselves.
+#
+#   image_tool <image> [question] [context]
+#
+# The image: a PNG, JPEG, GIF, WebP, HEIC, TIFF or BMP file. The question: what to answer about it (default: a full
+# description). The context: what the asker is working on and what it needs from the image, so the answer covers
+# what matters. The description is printed to stdout.
+#
+# The vision model is Gemma 3 4B (QAT Q4_0, from ggml-org) on llama.cpp's llama-server, both downloaded by Nearloop
+# (Settings › Images). The server starts on demand at 127.0.0.1:8765 and quits after five minutes without a request.
+# It runs on its own: Nearloop doesn't need to be open.
+set -uo pipefail
+
+dir=${NEARLOOP_IMAGE_SIDECAR_DIR:-"$HOME/Library/Application Support/Nearloop/image-sidecar"}
+port=${NEARLOOP_IMAGE_SIDECAR_PORT:-8765}
+idle=${NEARLOOP_IMAGE_SIDECAR_IDLE:-300}
+server="$dir/llama/llama-server"
+model="$dir/gemma-3-4b-it-qat-Q4_0.gguf"
+mmproj="$dir/mmproj-model-f16-4B.gguf"
+base="http://127.0.0.1:$port"
+
+die() { print -u2 -r -- "image_tool: $1"; exit "${2:-1}"; }
+
+if (( $# < 1 )) || [[ $1 == -h || $1 == --help ]]; then
+  print -u2 -r -- 'Usage: image_tool <image> [question] [context]'
+  print -u2 -r -- '  Describes the image with a local vision model (Gemma 3 4B). The question says what to answer about it;'
+  print -u2 -r -- '  the context says what you are working on and what you need from the image.'
+  exit $(( $# < 1 ? 64 : 0 ))
+fi
+
+image=$1
+question=${2:-}
+context=${3:-}
+[[ -z $question ]] && question='Describe this image in detail, including any text, numbers, chart shapes and colors.'
+[[ -f $image ]] || die "No such image: $image" 66
+# The files, and Nearloop's record that each matched its pinned SHA-256 when it came down (Settings › Images).
+[[ -x $server && -f $model && -f $mmproj && -f $model.sha256 && -f $mmproj.sha256 && -f $dir/llama/SHA256 ]] ||
+  die 'Enable the image sidecar in Nearloop › Settings › Images. It downloads the vision model this tool runs and checks it.' 69
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/image_tool.XXXXXX") || die 'Could not make a temporary folder.'
+trap 'rm -rf "$tmp"' EXIT  # (replaced below, once the start lock may be held too)
+
+# The image as a PNG no larger than 1600 pixels on its long side: one format for every input (sips reads HEIC,
+# TIFF, WebP, GIF and the rest), and no more pixels than the model's 896-pixel tiles can use.
+png="$tmp/image.png"
+if ! sips -s format png -Z 1600 "$image" --out "$png" >/dev/null 2>&1; then
+  die "Could not read $image as an image." 65
+fi
+
+healthy() { curl -s -m 2 -o /dev/null -w '%{http_code}' "$base/health" 2>/dev/null | grep -q '^200$'; }
+# Whether a pid is our llama-server (pids are reused, and server.pid can outlive the process it named). Right after
+# the spawn, ps can still show the command as "nohup <server> …" for a moment.
+ours() {
+  [[ -n $1 ]] || return 1
+  local cmd=$(ps -o command= -p "$1" 2>/dev/null)
+  [[ $cmd == "$server "* || $cmd == "nohup $server "* ]]
+}
+
+# Memory macOS can hand out without swapping, as Activity Monitor counts it: everything but wired, compressed and
+# app memory. The model, its projector and an 8K context take about 4.5 GB on the GPU.
+free_gb() {
+  vm_stat | awk -v page="$(sysctl -n hw.pagesize)" -v total="$(sysctl -n hw.memsize)" '
+    /Pages wired down/ { w = $NF } /Pages occupied by compressor/ { c = $NF }
+    /Anonymous pages/ { a = $NF } /Pages purgeable/ { p = $NF }
+    END { gsub(/\./, "", w); gsub(/\./, "", c); gsub(/\./, "", a); gsub(/\./, "", p)
+          printf "%.1f", (total - (w + c + a - p) * page) / 1073741824 }'
+}
+need_gb=5
+
+# Starts llama-server detached from this terminal, with a watchdog that stops it once idle. The lock folder is held
+# until the server answers (or fails), so a second caller arriving meanwhile waits for the same server instead of
+# starting another; a lock older than three minutes was left by a caller that died, and is taken over.
+lock="$dir/starting.lock"
+held_lock=0
+release_lock() { (( held_lock )) && rmdir "$lock" 2>/dev/null; held_lock=0; }
+trap 'release_lock; rm -rf "$tmp"' EXIT
+take_lock() {
+  mkdir "$lock" 2>/dev/null && { held_lock=1; return 0; }
+  local since=$(stat -f %m "$lock" 2>/dev/null || print 0)
+  if (( $(date +%s) - since > 180 )); then rmdir "$lock" 2>/dev/null; mkdir "$lock" 2>/dev/null && { held_lock=1; return 0; }; fi
+  return 1
+}
+start_server() {
+  mkdir -p "$dir"
+  if take_lock; then
+    if healthy; then release_lock; return; fi  # (another caller's server came up while the lock changed hands)
+    rm -f "$dir/server.pid"
+    local free=$(free_gb)
+    if (( free < need_gb )); then
+      # (the lock goes with this exit, and with no pid file a caller waiting on it gives up at once)
+      die "Not enough free memory for the vision model: ${free} GB free, about ${need_gb} GB needed. Close other apps or unload a model, then try again." 75
+    fi
+    nohup "$server" -m "$model" --mmproj "$mmproj" --host 127.0.0.1 --port "$port" \
+      -c 8192 -ngl 99 -np 1 --no-webui --alias gemma-3-4b >"$dir/server.log" 2>&1 &
+    local pid=$!
+    disown %% 2>/dev/null
+    print -r -- "$pid" >"$dir/server.pid"
+    touch "$dir/last-used"
+    # The watchdog: every 30 s, stop the server when nothing has used it for $idle seconds (or it is gone). It
+    # signals the pid only while that pid is still our llama-server.
+    nohup zsh -c '
+      pid=$1; dir=$2; idle=$3; server=$4
+      ours() { local c=$(ps -o command= -p "$pid" 2>/dev/null); [[ $c == "$server "* || $c == "nohup $server "* ]]; }
+      while sleep 30; do
+        ours || break
+        last=$(stat -f %m "$dir/last-used" 2>/dev/null || print 0)
+        if (( $(date +%s) - last > idle )); then
+          kill "$pid" 2>/dev/null; sleep 2; ours && kill -9 "$pid" 2>/dev/null; break
+        fi
+      done
+      [[ $(<"$dir/server.pid" 2>/dev/null) == "$pid" ]] && rm -f "$dir/server.pid"' watchdog "$pid" "$dir" "$idle" "$server" >/dev/null 2>&1 &
+    disown %% 2>/dev/null
+  fi
+  # Loading takes a few seconds; the first run after a download a little longer. A caller waiting on another's start
+  # gives up as soon as that start is over without a server: the lock gone and no pid written (refused for memory),
+  # or a pid that is no longer our server (it died).
+  local waited=0
+  while ! healthy; do
+    if [[ -f "$dir/server.pid" ]] && ! ours "$(<"$dir/server.pid")"; then
+      die "The vision server stopped while starting. Its log: $dir/server.log" 70
+    fi
+    if (( ! held_lock )) && [[ ! -d $lock && ! -f "$dir/server.pid" ]]; then
+      die "The vision server did not start (the caller starting it gave up; not enough free memory, most likely). Try again once memory is free." 75
+    fi
+    (( waited >= 360 )) && die "The vision server didn't answer within 3 minutes. Its log: $dir/server.log" 70
+    sleep 0.5; (( waited += 1 ))
+  done
+  release_lock
+}
+
+healthy || start_server
+touch "$dir/last-used"
+
+# The request: the question (and the context, when given) with the image, as an OpenAI chat completion. The text
+# becomes a JSON string in the JavaScript runtime (every control character escaped as JSON wants it); the image's
+# base64 needs no escaping.
+prompt=$question
+if [[ -n $context ]]; then
+  prompt+=$'\n\nContext: '"$context"
+fi
+prompt+=$'\n\nAnswer from the image itself. Transcribe text, numbers and labels exactly as they appear; describe layout, chart shapes and colors when they matter.'
+prompt_json=$(osascript -l JavaScript -e 'function run(argv) { return JSON.stringify(argv[0]); }' -- "$prompt") || die 'Could not encode the question.' 70
+request="$tmp/request.json"
+{
+  print -rn -- '{"model":"gemma-3-4b","temperature":0.2,"max_tokens":1200,"messages":[{"role":"user","content":[{"type":"text","text":'
+  print -rn -- "$prompt_json"
+  print -rn -- '},{"type":"image_url","image_url":{"url":"data:image/png;base64,'
+  base64 -i "$png" | tr -d '\n'
+  print -rn -- '"}}]}]}'
+} >"$request"
+
+response="$tmp/response.json"
+code=$(curl -s -m 600 -o "$response" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary "@$request" "$base/v1/chat/completions")
+touch "$dir/last-used"
+[[ $code == 200 ]] || die "The vision server answered HTTP ${code:-0}: $(head -c 300 "$response" 2>/dev/null)" 70
+
+# The answer out of the JSON, with the JavaScript runtime every Mac has (no python or jq needed).
+osascript -l JavaScript -e '
+ObjC.import("Foundation");
+function run(argv) {
+  const text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError($(argv[0]), $.NSUTF8StringEncoding, null));
+  const reply = JSON.parse(text);
+  if (reply.error) { throw new Error(reply.error.message || JSON.stringify(reply.error)); }
+  return (reply.choices[0].message.content || "").trim();
+}' "$response" || die 'The vision server sent an answer this tool could not read.' 70
