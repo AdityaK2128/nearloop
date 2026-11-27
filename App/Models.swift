@@ -172,6 +172,18 @@ enum ModelScanner {
         }
     }
 
+    /// Kapitsa's `is_complete`: the manifest is there and every file it lists has the listed size.
+    static func kapitsaComplete(_ url: URL) -> Bool {
+        guard let manifest = readJSON(url.appendingPathComponent(".kapitsa/manifest.json")),
+              let files = manifest["files"] as? [[String: Any]] else { return false }
+        let fm = FileManager.default
+        return files.allSatisfy { file in
+            guard let path = file["path"] as? String, let size = file["size"] as? NSNumber else { return false }
+            let attributes = try? fm.attributesOfItem(atPath: url.appendingPathComponent(path).path)
+            return (attributes?[.size] as? NSNumber)?.int64Value == size.int64Value
+        }
+    }
+
     static func describe(_ url: URL, library: String, verified: [String: RegistryEntry]) -> LocalModel {
         let rootPath = URL(fileURLWithPath: library).standardizedFileURL.path
         var relative = url.standardizedFileURL.path
@@ -205,12 +217,13 @@ enum ModelScanner {
         let files = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
         let weights = files.filter { $0.hasSuffix(".safetensors") && !$0.hasPrefix(".") }
         row.size = weights.reduce(Int64(0)) { total, name in total + fm.sizeFollowingLinks(atPath: url.appendingPathComponent(name).path) }
-        // A download `kapitsa pull` has not finished (paused, or still running): the files still being fetched sit
-        // in .kapitsa/parts as .part files, and the model's own files may already look whole (Flint ships no
-        // model.safetensors.index.json, so a missing shard goes unnoticed by the shard check), and whatever the model is, a
-        // folder still being filled is neither a drafter, nor unsupported, nor one for another engine yet.
-        let parts = (try? fm.contentsOfDirectory(atPath: url.appendingPathComponent(".kapitsa/parts").path)) ?? []
-        if parts.contains(where: { $0.hasSuffix(".part") }) {
+        // A folder Kapitsa downloads is complete by Kapitsa's own rule (`is_complete` in src/hub/fetch.cpp, what
+        // `kapitsa list` goes by): .kapitsa/manifest.json is there (a pull removes it when it starts and writes it
+        // when it finishes) and every file it lists has the listed size. Short of that the download is not finished
+        // (paused, or still running), whatever the model's own files look like (Flint ships no
+        // model.safetensors.index.json, so a missing shard goes unnoticed by the shard check), and whatever the model
+        // is: a folder still being filled is neither a drafter, nor unsupported, nor one for another engine yet.
+        if fm.fileExists(atPath: url.appendingPathComponent(".kapitsa").path), !kapitsaComplete(url) {
             row.status = .incomplete
             row.reason = "Download not finished: resume it in Discover, or `kapitsa pull \(url.lastPathComponent)`."
             return row
