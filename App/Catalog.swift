@@ -666,6 +666,9 @@ final class Downloads: ObservableObject {
     /// Cancels a download and deletes what it has written: a running one is paused first and waited for (up to
     /// 10 s), then the model folder goes (`kapitsa rm`; a drafter's files straight from its folder).
     func cancel(_ spec: String) async throws {
+        // A model's drafter downloads with it (startFiles, attached to the model): it goes too, or it would finish
+        // in the downloads folder with no model to move into, and its attachment would stay in UserDefaults.
+        if let drafter = attachedDrafter(of: spec) { try await cancel(drafter) }
         pause(spec)
         for _ in 0..<100 where processes[spec] != nil { try? await Task.sleep(nanoseconds: 100_000_000) }
         if let process = processes[spec], process.isRunning { process.terminate() }
