@@ -552,6 +552,7 @@ final class Downloads: ObservableObject {
                 throw Kapitsa.Failure(errorDescription: "\(repo) has no weights to download.")
             }
             jobs[repo]?.expected = files.reduce(0) { $0 + $1.size }
+            guard jobs[repo] != nil else { return }  // cancelled while the API call ran: leave no empty folder
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             guard jobs[repo]?.state == .preparing else { jobs[repo]?.state = .paused; return }
             jobs[repo]?.state = .running
@@ -676,7 +677,11 @@ final class Downloads: ObservableObject {
         for _ in 0..<100 where processes[spec] != nil { try? await Task.sleep(nanoseconds: 100_000_000) }
         if let process = processes[spec], process.isRunning { process.terminate() }
         if attachments[spec] != nil {
-            if let folder = jobs[spec]?.folder { try FileManager.default.removeItem(at: folder) }
+            // The folder is made only once the Hugging Face API call succeeds: a drafter still preparing, or one that
+            // failed before that, has none, and its cancel must not fail (it would stop the model's cancel too).
+            if let folder = jobs[spec]?.folder, FileManager.default.fileExists(atPath: folder.path) {
+                try FileManager.default.removeItem(at: folder)
+            }
             jobs[spec] = nil
             attachments[spec] = nil
         } else {
